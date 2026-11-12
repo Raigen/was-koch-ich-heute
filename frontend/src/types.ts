@@ -60,6 +60,8 @@ export interface StorePrices {
   error?: string;
   timedOut?: boolean;
   cached: boolean;
+  /** AI usage of this shop's research (zero for cache hits). */
+  usage?: Usage;
 }
 
 export interface StoreTotal {
@@ -76,6 +78,34 @@ export interface Comparison {
   mixTotal: number;
   mixMissing: string[];
   ingredientCount: number;
+  /** Total AI usage of all shops in this comparison. */
+  usage?: Usage;
+}
+
+/** AI usage of a research call (or a sum of several) and its estimated cost. */
+export interface Usage {
+  provider: string;
+  model: string;
+  /** Number of API calls, including continuations. */
+  requests: number;
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheWriteTokens: number;
+  webSearches: number;
+  webFetches: number;
+  costEur: number;
+  /** False if the backend price table has no entry for the model. */
+  costKnown: boolean;
+  /** Served from the backend cache: no new AI cost. */
+  cached: boolean;
+}
+
+/** Response of /api/recipes/search. */
+export interface RecipeSearchResult {
+  recipes: Recipe[];
+  cached: boolean;
+  usage?: Usage;
 }
 
 export interface AppConfig {

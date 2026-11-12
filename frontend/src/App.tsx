@@ -1,11 +1,12 @@
 import { useEffect, useRef, useState } from "react";
 import { getConfig, getStores, searchRecipes } from "./api";
 import { storageGet, storageSet } from "./format";
-import type { AppConfig, Recipe, RecipeQuery, Store } from "./types";
+import type { AppConfig, Recipe, RecipeQuery, Store, Usage } from "./types";
 import SearchForm from "./components/SearchForm";
 import StorePicker from "./components/StorePicker";
 import RecipeList from "./components/RecipeList";
 import RecipeDetail from "./components/RecipeDetail";
+import UsageLine from "./components/UsageLine";
 
 const DEFAULT_QUERY: RecipeQuery = { query: "", servings: 4, maxBudget: 0, diet: "", maxRecipes: 4, exclude: "" };
 
@@ -19,6 +20,7 @@ export default function App() {
   const [query, setQuery] = useState<RecipeQuery>(() => ({ ...DEFAULT_QUERY, ...storageGet("query", {}), query: "" }));
 
   const [recipes, setRecipes] = useState<Recipe[] | null>(null);
+  const [usage, setUsage] = useState<Usage | undefined>(undefined);
   const [selected, setSelected] = useState<Recipe | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -43,7 +45,9 @@ export default function App() {
     setError(null);
     setSelected(null);
     try {
-      setRecipes(await searchRecipes(q, ctrl.signal));
+      const result = await searchRecipes(q, ctrl.signal);
+      setRecipes(result.recipes);
+      setUsage(result.usage);
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
     } finally {
@@ -107,7 +111,13 @@ export default function App() {
           onBack={() => setSelected(null)}
         />
       ) : (
-        recipes && !loading && <RecipeList recipes={recipes} onSelect={setSelected} />
+        recipes &&
+        !loading && (
+          <>
+            <RecipeList recipes={recipes} onSelect={setSelected} />
+            <UsageLine usage={usage} />
+          </>
+        )
       )}
 
       <footer className="footer">

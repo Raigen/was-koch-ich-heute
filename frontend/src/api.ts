@@ -1,4 +1,4 @@
-import type { AppConfig, Ingredient, PriceEvent, Recipe, RecipeQuery, Store } from "./types";
+import type { AppConfig, Ingredient, PriceEvent, RecipeQuery, RecipeSearchResult, Store } from "./types";
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -17,14 +17,15 @@ async function json<T>(res: Response): Promise<T> {
 export const getConfig = () => fetch("/api/config").then((r) => json<AppConfig>(r));
 export const getStores = () => fetch("/api/stores").then((r) => json<Store[]>(r));
 
-export async function searchRecipes(q: RecipeQuery, signal?: AbortSignal): Promise<Recipe[]> {
+export async function searchRecipes(q: RecipeQuery, signal?: AbortSignal): Promise<RecipeSearchResult> {
   const res = await fetch("/api/recipes/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(q),
     signal,
   });
-  return (await json<{ recipes: Recipe[] }>(res)).recipes ?? [];
+  const result = await json<RecipeSearchResult>(res);
+  return { ...result, recipes: result.recipes ?? [] };
 }
 
 /**

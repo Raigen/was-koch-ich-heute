@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { comparePrices } from "../api";
 import { formatEur, formatQty } from "../format";
 import type { Comparison, Ingredient, Offer, Store, StorePrices } from "../types";
+import UsageLine from "./UsageLine";
 
 interface Props {
   ingredients: Ingredient[];
@@ -118,6 +119,7 @@ export default function PriceComparison({ ingredients, stores, allStores, postal
               {state === "done" && "✓"}
               {state === "failed" && (r?.timedOut ? "⏱" : "✕")} {s.name}
               {r?.cached && <em className="muted small"> (Cache)</em>}
+              {r?.usage && !r.cached && <UsageLine usage={r.usage} compact className="small" />}
             </span>
           );
         })}
@@ -127,6 +129,8 @@ export default function PriceComparison({ ingredients, stores, allStores, postal
           </span>
         )}
       </div>
+
+      {comparison && <UsageLine usage={comparison.usage} />}
 
       {error && <div className="error">{error}</div>}
 
