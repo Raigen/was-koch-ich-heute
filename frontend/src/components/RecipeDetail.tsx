@@ -23,20 +23,38 @@ export default function RecipeDetail({ recipe, stores, allStores, postalCode, on
         ← zurück zu den Ergebnissen
       </button>
       <div className="detail-head">
-        <div>
+        {recipe.imageUrl && (
+          <img
+            className="detail-image"
+            src={recipe.imageUrl}
+            alt=""
+            onError={(e) => (e.currentTarget.style.display = "none")}
+          />
+        )}
+        <div className="detail-title">
           <h2>{recipe.title}</h2>
           <p className="muted">{recipe.description}</p>
         </div>
-        {recipe.sourceUrl && (
-          <a href={recipe.sourceUrl} target="_blank" rel="noreferrer noopener" className="link">
-            Originalrezept öffnen ↗
-          </a>
-        )}
+        <div className="detail-links">
+          {recipe.mealieUrl && (
+            <a href={recipe.mealieUrl} target="_blank" rel="noreferrer noopener" className="link">
+              In Mealie öffnen ↗
+            </a>
+          )}
+          {recipe.sourceUrl && (
+            <a href={recipe.sourceUrl} target="_blank" rel="noreferrer noopener" className="link">
+              Originalrezept öffnen ↗
+            </a>
+          )}
+        </div>
       </div>
 
       <div className="detail-grid">
         <div className="panel">
-          <h3>Zutaten für {recipe.servings} Portionen</h3>
+          <h3>{recipe.servings > 0 ? `Zutaten für ${recipe.servings} Portionen` : "Zutaten"}</h3>
+          {recipe.servings === 0 && (
+            <p className="muted small">Das Rezept hat keine Portionsangabe; Mengen wie im Original.</p>
+          )}
           <p className="muted small">Haken entfernen, was du schon zuhause hast.</p>
           <ul className="ingredients">
             {recipe.ingredients.map((ing, i) => (

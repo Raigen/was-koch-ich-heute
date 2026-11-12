@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/raigen/was-koch-ich-heute/backend/internal/api"
+	"github.com/raigen/was-koch-ich-heute/backend/internal/mealie"
 	"github.com/raigen/was-koch-ich-heute/backend/internal/research"
 )
 
@@ -40,10 +41,24 @@ func main() {
 		slog.Error("invalid STORE_TIMEOUT (example: 3m, 90s)", "err", err)
 		os.Exit(1)
 	}
+	// Mealie is optional: without MEALIE_URL the feature stays hidden.
+	var mealieClient *mealie.Client
+	if os.Getenv("MEALIE_URL") != "" {
+		mealieClient, err = mealie.New(mealie.Config{
+			BaseURL:   os.Getenv("MEALIE_URL"),
+			PublicURL: os.Getenv("MEALIE_PUBLIC_URL"),
+			Token:     os.Getenv("MEALIE_API_TOKEN"),
+		})
+		if err != nil {
+			slog.Error("invalid Mealie configuration", "err", err)
+			os.Exit(1)
+		}
+	}
 	srv := api.New(researcher, api.Options{
 		StaticDir:    os.Getenv("STATIC_DIR"),
 		Parallel:     parallel,
 		StoreTimeout: storeTimeout,
+		Mealie:       mealieClient,
 	})
 
 	addr := os.Getenv("ADDR")
@@ -58,7 +73,7 @@ func main() {
 	}
 
 	go func() {
-		slog.Info("server listening", "addr", addr, "ai", researcher.Name())
+		slog.Info("server listening", "addr", addr, "ai", researcher.Name(), "mealie", mealieClient != nil)
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("server error", "err", err)
 			os.Exit(1)

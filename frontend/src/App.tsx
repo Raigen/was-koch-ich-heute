@@ -1,11 +1,15 @@
 import { useEffect, useRef, useState } from "react";
-import { getConfig, getStores, searchRecipes } from "./api";
+import { getConfig, getMealieRecipe, getStores, searchMealie, searchRecipes } from "./api";
 import { storageGet, storageSet } from "./format";
-import type { AppConfig, Recipe, RecipeQuery, Store } from "./types";
+import type { AppConfig, MealieRecipePage, MealieRecipeSummary, Recipe, RecipeQuery, Store } from "./types";
 import SearchForm from "./components/SearchForm";
+import MealieSearch from "./components/MealieSearch";
+import MealieList from "./components/MealieList";
 import StorePicker from "./components/StorePicker";
 import RecipeList from "./components/RecipeList";
 import RecipeDetail from "./components/RecipeDetail";
+
+type Source = "web" | "mealie";
 
 const DEFAULT_QUERY: RecipeQuery = { query: "", servings: 4, maxBudget: 0, diet: "", maxRecipes: 4, exclude: "" };
 
@@ -24,6 +28,20 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
 
+  // Recipe source: AI web research or the user's own Mealie instance.
+  // Without Mealie configured in the backend, only the web search exists.
+  const [sourcePref, setSourcePref] = useState<Source>(() => storageGet<Source>("source", "web"));
+  const source: Source = config?.mealie ? sourcePref : "web";
+  const [mealieQuery, setMealieQuery] = useState("");
+  const [mealieResult, setMealieResult] = useState<MealieRecipePage | null>(null);
+  // The query that produced mealieResult; "load more" pages with it, not with
+  // whatever is in the search field now.
+  const [mealieResultQuery, setMealieResultQuery] = useState("");
+  const [mealieLoading, setMealieLoading] = useState(false);
+  const [mealieMore, setMealieMore] = useState(false);
+  const [openingSlug, setOpeningSlug] = useState<string | null>(null);
+  const mealieAbortRef = useRef<AbortController | null>(null);
+
   useEffect(() => {
     getConfig().then(setConfig).catch(() => setConfig(null));
     getStores()
@@ -33,6 +51,12 @@ export default function App() {
 
   useEffect(() => storageSet("stores", selectedStores), [selectedStores]);
   useEffect(() => storageSet("plz", postalCode), [postalCode]);
+  useEffect(() => storageSet("source", sourcePref), [sourcePref]);
+
+  // In Mealie mode, list the recipes right away: there is no AI waiting time.
+  useEffect(() => {
+    if (source === "mealie" && !mealieResult) void runMealieSearch(1);
+  }, [source]);
 
   async function runSearch(q: RecipeQuery) {
     abortRef.current?.abort();
@@ -48,6 +72,52 @@ export default function App() {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
     } finally {
       if (abortRef.current === ctrl) setLoading(false);
+    }
+  }
+
+  function switchSource(next: Source) {
+    if (next === source) return;
+    setSourcePref(next);
+    setSelected(null);
+    setError(null);
+  }
+
+  async function runMealieSearch(page: number) {
+    mealieAbortRef.current?.abort();
+    const ctrl = new AbortController();
+    mealieAbortRef.current = ctrl;
+    if (page === 1) {
+      setMealieLoading(true);
+      setSelected(null);
+    } else {
+      setMealieMore(true);
+    }
+    setError(null);
+    const q = page === 1 ? mealieQuery.trim() : mealieResultQuery;
+    try {
+      const res = await searchMealie(q, page, ctrl.signal);
+      setMealieResultQuery(q);
+      setMealieResult((prev) => (page > 1 && prev ? { ...res, recipes: [...prev.recipes, ...res.recipes] } : res));
+    } catch (e) {
+      if ((e as Error).name !== "AbortError") setError((e as Error).message);
+    } finally {
+      if (mealieAbortRef.current === ctrl) {
+        setMealieLoading(false);
+        setMealieMore(false);
+      }
+    }
+  }
+
+  async function openMealieRecipe(r: MealieRecipeSummary) {
+    storageSet("query", { servings: query.servings, maxBudget: query.maxBudget, diet: query.diet });
+    setOpeningSlug(r.slug);
+    setError(null);
+    try {
+      setSelected(await getMealieRecipe(r.slug, query.servings));
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setOpeningSlug(null);
     }
   }
 
@@ -73,7 +143,28 @@ export default function App() {
       )}
 
       <section className="panel">
-        <SearchForm value={query} onChange={setQuery} onSubmit={runSearch} loading={loading} />
+        {config?.mealie && (
+          <div className="source-toggle" role="group" aria-label="Rezeptquelle">
+            <button type="button" aria-pressed={source === "web"} onClick={() => switchSource("web")}>
+              Im Web suchen
+            </button>
+            <button type="button" aria-pressed={source === "mealie"} onClick={() => switchSource("mealie")}>
+              Aus Mealie
+            </button>
+          </div>
+        )}
+        {source === "mealie" ? (
+          <MealieSearch
+            query={mealieQuery}
+            onQueryChange={setMealieQuery}
+            servings={query.servings}
+            onServingsChange={(servings) => setQuery((q) => ({ ...q, servings }))}
+            onSubmit={() => runMealieSearch(1)}
+            loading={mealieLoading}
+          />
+        ) : (
+          <SearchForm value={query} onChange={setQuery} onSubmit={runSearch} loading={loading} />
+        )}
         <div className="row">
           <StorePicker stores={stores} selected={selectedStores} onChange={setSelectedStores} />
           <label className="field plz">
@@ -91,7 +182,7 @@ export default function App() {
 
       {error && <div className="error">{error}</div>}
 
-      {loading && (
+      {source === "web" && loading && (
         <div className="loading">
           <span className="spinner" /> Die KI recherchiert Rezepte im Web … das kann bis zu einer Minute dauern.
         </div>
@@ -106,6 +197,22 @@ export default function App() {
           postalCode={postalCode}
           onBack={() => setSelected(null)}
         />
+      ) : source === "mealie" ? (
+        mealieLoading ? (
+          <div className="loading">
+            <span className="spinner" /> Rezepte werden aus Mealie geladen …
+          </div>
+        ) : (
+          mealieResult && (
+            <MealieList
+              result={mealieResult}
+              onSelect={openMealieRecipe}
+              onMore={() => runMealieSearch(mealieResult.page + 1)}
+              loadingMore={mealieMore}
+              openingSlug={openingSlug}
+            />
+          )
+        )
       ) : (
         recipes && !loading && <RecipeList recipes={recipes} onSelect={setSelected} />
       )}

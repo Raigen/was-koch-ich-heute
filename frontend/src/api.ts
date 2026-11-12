@@ -1,4 +1,12 @@
-import type { AppConfig, Ingredient, PriceEvent, Recipe, RecipeQuery, Store } from "./types";
+import type {
+  AppConfig,
+  Ingredient,
+  MealieRecipePage,
+  PriceEvent,
+  Recipe,
+  RecipeQuery,
+  Store,
+} from "./types";
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -25,6 +33,16 @@ export async function searchRecipes(q: RecipeQuery, signal?: AbortSignal): Promi
     signal,
   });
   return (await json<{ recipes: Recipe[] }>(res)).recipes ?? [];
+}
+
+export async function searchMealie(query: string, page: number, signal?: AbortSignal): Promise<MealieRecipePage> {
+  const params = new URLSearchParams({ query, page: String(page) });
+  return json<MealieRecipePage>(await fetch(`/api/mealie/recipes?${params}`, { signal }));
+}
+
+export async function getMealieRecipe(slug: string, servings: number, signal?: AbortSignal): Promise<Recipe> {
+  const params = new URLSearchParams({ servings: String(servings) });
+  return json<Recipe>(await fetch(`/api/mealie/recipes/${encodeURIComponent(slug)}?${params}`, { signal }));
 }
 
 /**

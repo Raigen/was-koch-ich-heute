@@ -33,6 +33,27 @@ type Recipe struct {
 	Steps            []string     `json:"steps"`
 	// EstimatedCostEUR is a rough AI estimate made before real prices are researched.
 	EstimatedCostEUR float64 `json:"estimatedCostEur"`
+	// ImageURL and MealieURL are only set for recipes loaded from Mealie.
+	ImageURL  string `json:"imageUrl,omitempty"`
+	MealieURL string `json:"mealieUrl,omitempty"`
+}
+
+// MealieRecipeSummary is one entry of a Mealie recipe search.
+type MealieRecipeSummary struct {
+	Slug             string `json:"slug"`
+	Title            string `json:"title"`
+	Description      string `json:"description"`
+	ImageURL         string `json:"imageUrl"`
+	Servings         int    `json:"servings"`
+	TotalTimeMinutes int    `json:"totalTimeMinutes"`
+}
+
+// MealieRecipePage is one page of a Mealie recipe search.
+type MealieRecipePage struct {
+	Recipes    []MealieRecipeSummary `json:"recipes"`
+	Page       int                   `json:"page"`
+	TotalPages int                   `json:"totalPages"`
+	Total      int                   `json:"total"`
 }
 
 // RecipeQuery is a recipe search request.

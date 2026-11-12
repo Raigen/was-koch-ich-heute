@@ -127,6 +127,7 @@ backend/
   internal/research/     Researcher interface; Claude, Mistral and demo implementations;
                          shared prompts; list of shops
   internal/pricing/      units, package counts, price comparison
+  internal/mealie/       Mealie REST client and mapping of Mealie recipes (optional)
   internal/model/        shared data types (mirrored in frontend/src/types.ts)
 frontend/
   src/api.ts             API client including the NDJSON stream reader
@@ -167,6 +168,77 @@ To add a provider:
 | `STORE_TIMEOUT` | maximum research time per shop, e.g. `3m`, `90s` | `3m` |
 | `ADDR` | listen address | `:8080` |
 | `STATIC_DIR` | path to the built frontend | – |
+| `MEALIE_URL` | URL of your Mealie instance as the backend reaches it, e.g. `http://mealie.local:9000`; empty hides the feature | – |
+| `MEALIE_API_TOKEN` | Mealie API token (required with `MEALIE_URL`) | – |
+| `MEALIE_PUBLIC_URL` | Mealie URL for "In Mealie öffnen" links in the browser | `MEALIE_URL` |
+
+## Recipes from Mealie
+
+With `MEALIE_URL` and `MEALIE_API_TOKEN` set, the search gets a toggle "Im Web suchen" / "Aus Mealie".
+In Mealie mode the app lists recipes from your own [Mealie](https://mealie.io) instance (no AI cost, no
+waiting time). An opened recipe shows the same ingredient selection and price comparison as a web recipe.
+
+- **Token:** create one in Mealie under *User profile → API Tokens* (`/user/profile/api-tokens`). It stays
+  in the backend: the browser only talks to this app, and recipe images are proxied through
+  `/api/mealie/images/{id}`.
+- **Access:** this app has no login. **Anyone who can reach the app can list and read every recipe the
+  token can see in Mealie**, including private ones. Use a token of a dedicated Mealie user (or a group or
+  household that only holds recipes you are happy to share). Do not expose the app to the internet without
+  your own authentication in front of it, e.g. a reverse proxy with basic auth or an SSO proxy.
+- **Ingredients:** if Mealie has parsed an ingredient, its food, quantity and unit are used. Unparsed lines
+  (e.g. "500 g Mehl") are split with simple rules; anything not recognised stays in the name. Running
+  Mealie's ingredient parser on your recipes gives the best results.
+- **Servings:** quantities are scaled from the recipe's servings (`recipeServings`, else the yield) to the
+  requested number. Recipes without servings keep their original quantities.
+- **Staples** such as salt, pepper, oil, sugar and water are unchecked by default (word list, no AI).
+- The mapping was checked against the Mealie v3 API (`GET /api/recipes`, `GET /api/recipes/{slug}`,
+  `GET /api/groups/self`, `GET /api/media/recipes/{id}/images/…`).
+
+### Reaching Mealie from Docker
+
+Inside the app container, `localhost` is the container itself, not your machine. Pick the setup that
+matches how Mealie runs (`9925` is the host port from Mealie's example Compose file, `9000` its container
+port):
+
+- **Mealie on another machine or a reachable host name:** `MEALIE_URL=http://mealie.local:9925`.
+- **Mealie in Docker on the same machine, separate Compose projects:** attach the app to Mealie's
+  network and use the container name. Set `MEALIE_PUBLIC_URL` to the address your browser uses:
+
+  ```yaml
+  # docker-compose.override.yml
+  services:
+    app:
+      networks: [default, mealie]
+  networks:
+    mealie:
+      external: true
+      name: mealie_default   # see `docker network ls`
+  ```
+
+  ```bash
+  MEALIE_URL=http://mealie:9000
+  MEALIE_PUBLIC_URL=http://localhost:9925
+  ```
+
+- **Mealie published on a port of the Docker host:** use the host gateway.
+  Docker Desktop provides `host.docker.internal`; on Linux add it yourself:
+
+  ```yaml
+  services:
+    app:
+      extra_hosts: ["host.docker.internal:host-gateway"]
+  ```
+
+  ```bash
+  MEALIE_URL=http://host.docker.internal:9925
+  ```
+
+- **`network_mode: host` (Linux only):** the app shares the host's network, so
+  `MEALIE_URL=http://localhost:9925` works. The `ports:` mapping is then ignored; the app listens directly
+  on `ADDR` (`:8080`).
+
+If Mealie cannot be reached or rejects the token, the app shows an error message in the Mealie view;
+the web search keeps working.
 
 ## Running behind a reverse proxy
 
