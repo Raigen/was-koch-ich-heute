@@ -256,6 +256,10 @@ func mapIngredient(in Ingredient) (model.Ingredient, bool) {
 	if ing.Quantity < 0 || math.IsNaN(ing.Quantity) || math.IsInf(ing.Quantity, 0) {
 		ing.Quantity = 0
 	}
+	if ing.Quantity > 0 && ing.Unit == "" {
+		// A plain count ("2 Zwiebeln"); the AI providers use "Stück" for it.
+		ing.Unit = "Stück"
+	}
 	ing.Pantry = IsPantry(ing.Name)
 	return ing, true
 }
