@@ -3,7 +3,6 @@ package api
 import (
 	"context"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -125,17 +124,24 @@ func (s *Server) handleMealieImage(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	img, err := s.mealie.Image(ctx, id)
 	if err != nil {
-		if !errors.Is(err, mealie.ErrNotFound) {
-			slog.Warn("mealie image failed", "err", err)
+		// A page loads up to 24 images; a rejected token or an unreachable
+		// instance is already logged by the recipe list request, so image
+		// failures are only logged at debug level (except oversized images).
+		if errors.Is(err, mealie.ErrImageTooLarge) {
+			slog.Warn("mealie image too large", "id", id, "limit", mealie.MaxImageBytes)
+		} else {
+			slog.Debug("mealie image failed", "id", id, "err", err)
 		}
 		http.Error(w, "image not available", http.StatusNotFound)
 		return
 	}
-	defer img.Body.Close()
 	w.Header().Set("Content-Type", img.ContentType)
+	w.Header().Set("Content-Length", strconv.Itoa(len(img.Data)))
 	w.Header().Set("Cache-Control", "private, max-age=86400")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	_, _ = io.Copy(w, io.LimitReader(img.Body, mealie.MaxImageBytes))
+	// Defence in depth in case the image is opened directly in the browser.
+	w.Header().Set("Content-Security-Policy", "default-src 'none'; sandbox")
+	_, _ = w.Write(img.Data)
 }
 
 func (s *Server) requireMealie(w http.ResponseWriter) bool {

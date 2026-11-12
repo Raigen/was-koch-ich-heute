@@ -3,12 +3,12 @@ package mealie
 import (
 	"context"
 	"errors"
-	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/raigen/was-koch-ich-heute/backend/internal/mealie/mealietest"
 	"github.com/raigen/was-koch-ich-heute/backend/internal/model"
@@ -109,7 +109,7 @@ func TestRecipeMappingAndScaling(t *testing.T) {
 	want := []model.Ingredient{
 		{Name: "Rote Linsen", Quantity: 400, Unit: "g"},
 		{Name: "Olivenöl", Quantity: 2, Unit: "EL", Pantry: true},
-		{Name: "Kokosmilch", Quantity: 3, Unit: "Dose"},
+		{Name: "Kokosmilch (400 ml)", Quantity: 3, Unit: "Dose"},
 		{Name: "Zwiebel", Quantity: 1, Unit: "Stück"},
 		{Name: "Salz und Pfeffer", Quantity: 0, Unit: "", Pantry: true},
 	}
@@ -192,10 +192,8 @@ func TestGroupSlugAndImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer img.Body.Close()
-	b, _ := io.ReadAll(img.Body)
-	if img.ContentType != "image/webp" || string(b) != string(mealietest.ImageBytes) {
-		t.Errorf("image: %q %q", img.ContentType, b)
+	if img.ContentType != "image/webp" || string(img.Data) != string(mealietest.ImageBytes) {
+		t.Errorf("image: %q %q", img.ContentType, img.Data)
 	}
 }
 
@@ -214,6 +212,11 @@ func TestParseFreeText(t *testing.T) {
 		{"2 tbsp olive oil", model.Ingredient{Name: "olive oil", Quantity: 2, Unit: "EL"}},
 		{"1/4 Bund Petersilie", model.Ingredient{Name: "Petersilie", Quantity: 0.25, Unit: "Bund"}},
 		{"Eier", model.Ingredient{Name: "Eier"}},
+		{"1 ⅙ l Wasser", model.Ingredient{Name: "Wasser", Quantity: 1 + 1.0/6, Unit: "l"}},
+		{"⅜ l Sahne", model.Ingredient{Name: "Sahne", Quantity: 3.0 / 8, Unit: "l"}},
+		{"2 / 3 Tasse Milch", model.Ingredient{Name: "Milch", Quantity: 2.0 / 3, Unit: "Tasse"}},
+		{"1 Dose (400 g) Tomaten", model.Ingredient{Name: "Tomaten (400 g)", Quantity: 1, Unit: "Dose"}},
+		{"2 Zwiebeln (rot), gewürfelt", model.Ingredient{Name: "Zwiebeln", Quantity: 2}},
 		{"Große Zwiebel", model.Ingredient{Name: "Große Zwiebel"}},
 	}
 	for _, c := range cases {
@@ -223,9 +226,75 @@ func TestParseFreeText(t *testing.T) {
 	}
 }
 
+func TestUnparsedLineWithQuantity(t *testing.T) {
+	// Mealie (at least older versions) may send quantity 1 for unparsed
+	// lines; the free text must still be parsed.
+	cases := []struct {
+		in   Ingredient
+		want model.Ingredient
+	}{
+		{Ingredient{Quantity: 1, Note: "500 g Mehl"}, model.Ingredient{Name: "Mehl", Quantity: 500, Unit: "g"}},
+		{Ingredient{Quantity: 1, Note: "2 Zwiebeln"}, model.Ingredient{Name: "Zwiebeln", Quantity: 2, Unit: "Stück"}},
+		{Ingredient{Quantity: 3, Note: "Eier"}, model.Ingredient{Name: "Eier", Quantity: 3, Unit: "Stück"}},
+		{Ingredient{Quantity: 2, Unit: &Unit{Name: "Esslöffel"}, Note: "Mehl"}, model.Ingredient{Name: "Mehl", Quantity: 2, Unit: "EL"}},
+	}
+	for _, c := range cases {
+		got, ok := mapIngredient(c.in)
+		if !ok || got != c.want {
+			t.Errorf("mapIngredient(%+v) = %+v, want %+v", c.in, got, c.want)
+		}
+	}
+}
+
+func TestTimeoutIsNotUnreachable(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(2 * time.Second):
+		case <-r.Context().Done():
+		}
+	}))
+	defer slow.Close()
+	c, err := New(Config{BaseURL: slow.URL, Token: "x", Timeout: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = c.Search(context.Background(), "", 1, 10)
+	if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, ErrUnreachable) {
+		t.Errorf("slow server: got %v, want context.DeadlineExceeded", err)
+	}
+}
+
+func TestImageLimitsAndTypes(t *testing.T) {
+	var body []byte
+	var contentType string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", contentType)
+		_, _ = w.Write(body)
+	}))
+	defer srv.Close()
+	c := newClient(t, srv.URL, "x")
+	id := mealietest.RecipeID
+
+	body, contentType = []byte("<svg onload=alert(1)/>"), "image/svg+xml"
+	if img, err := c.Image(context.Background(), id); err != nil || img.ContentType != "image/webp" {
+		t.Errorf("svg: content type %q, err %v; want image/webp", img.ContentType, err)
+	}
+	body, contentType = []byte("png"), "image/png; charset=binary"
+	if img, err := c.Image(context.Background(), id); err != nil || img.ContentType != "image/png" {
+		t.Errorf("png: content type %q, err %v", img.ContentType, err)
+	}
+	body, contentType = make([]byte, MaxImageBytes+1), "image/webp"
+	if _, err := c.Image(context.Background(), id); !errors.Is(err, ErrImageTooLarge) {
+		t.Errorf("oversized image: got %v, want ErrImageTooLarge", err)
+	}
+}
+
 func TestIsPantry(t *testing.T) {
-	yes := []string{"Salz", "Meersalz", "Pfeffer", "Salz und Pfeffer", "Olivenöl", "Öl", "Zucker", "Wasser", "salt", "black pepper", "olive oil"}
-	no := []string{"Paprika", "Pfefferschote", "Vanillezucker", "Kokoswasser", "Sesamöl", "red bell pepper", "Rote Linsen"}
+	yes := []string{"Salz", "Meersalz", "Pfeffer", "Salz und Pfeffer", "Olivenöl", "Öl", "Zucker", "Wasser",
+		"Pfeffer aus der Mühle", "Olivenöl extra vergine", "Wasser (200 ml)", "salt", "black pepper", "olive oil",
+		"salt and pepper to taste"}
+	no := []string{"Paprika", "Pfefferschote", "Vanillezucker", "Kokoswasser", "Sesamöl", "Chiliöl", "Arganöl",
+		"Haselnussöl", "Pfeffer-Salami", "Salzbrezeln", "Puderzucker", "red bell pepper", "olives", "Rote Linsen"}
 	for _, n := range yes {
 		if !IsPantry(n) {
 			t.Errorf("IsPantry(%q) = false, want true", n)
