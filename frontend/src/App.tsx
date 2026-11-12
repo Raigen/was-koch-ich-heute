@@ -34,6 +34,9 @@ export default function App() {
   const source: Source = config?.mealie ? sourcePref : "web";
   const [mealieQuery, setMealieQuery] = useState("");
   const [mealieResult, setMealieResult] = useState<MealieRecipePage | null>(null);
+  // The query that produced mealieResult; "load more" pages with it, not with
+  // whatever is in the search field now.
+  const [mealieResultQuery, setMealieResultQuery] = useState("");
   const [mealieLoading, setMealieLoading] = useState(false);
   const [mealieMore, setMealieMore] = useState(false);
   const [openingSlug, setOpeningSlug] = useState<string | null>(null);
@@ -90,8 +93,10 @@ export default function App() {
       setMealieMore(true);
     }
     setError(null);
+    const q = page === 1 ? mealieQuery.trim() : mealieResultQuery;
     try {
-      const res = await searchMealie(mealieQuery.trim(), page, ctrl.signal);
+      const res = await searchMealie(q, page, ctrl.signal);
+      setMealieResultQuery(q);
       setMealieResult((prev) => (page > 1 && prev ? { ...res, recipes: [...prev.recipes, ...res.recipes] } : res));
     } catch (e) {
       if ((e as Error).name !== "AbortError") setError((e as Error).message);
