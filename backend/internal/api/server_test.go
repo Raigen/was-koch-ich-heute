@@ -180,6 +180,58 @@ func TestPriceCompareTimeoutHeartbeatAndRetry(t *testing.T) {
 	}
 }
 
+// TestUsageRejectedRequest checks that a request the API rejected before
+// billing (here: an invalid key) costs a known 0 € instead of "unknown", and
+// does not make the total incomplete.
+func TestUsageRejectedRequest(t *testing.T) {
+	fake := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer fake.Close()
+	m := research.NewMistral(research.Config{MistralAPIKey: "wrong", MistralBaseURL: fake.URL})
+	ts := httptest.NewServer(New(m, Options{}).Handler())
+	defer ts.Close()
+
+	resp, err := http.Post(ts.URL+"/api/recipes/search", "application/json", strings.NewReader(`{"query":"dal"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var failed struct{ Usage *model.Usage }
+	if err := json.NewDecoder(resp.Body).Decode(&failed); err != nil {
+		t.Fatal(err)
+	}
+	if u := failed.Usage; u == nil || !u.CostKnown || u.CostEUR != 0 || u.Incomplete {
+		t.Errorf("rejected recipe search should cost a known 0: %+v", u)
+	}
+
+	body := `{"ingredients":[{"name":"Reis","quantity":250,"unit":"g"}],"storeIds":["rewe","lidl"]}`
+	resp2, err := http.Post(ts.URL+"/api/prices/compare", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	var total *model.Usage
+	sc := bufio.NewScanner(resp2.Body)
+	for sc.Scan() {
+		var ev priceEvent
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			t.Fatal(err)
+		}
+		switch ev.Type {
+		case "store":
+			if u := ev.Store.Usage; ev.Store.Error == "" || u == nil || !u.CostKnown || u.CostEUR != 0 {
+				t.Errorf("rejected shop: %+v usage %+v", ev.Store, u)
+			}
+		case "summary":
+			total = ev.Comparison.Usage
+		}
+	}
+	if total == nil || !total.CostKnown || total.Incomplete || total.CostEUR != 0 {
+		t.Errorf("total = %+v", total)
+	}
+}
+
 // billedResearcher fails recipe searches after a billed API call and lets
 // edeka time out after a billed API call.
 type billedResearcher struct{ research.Demo }

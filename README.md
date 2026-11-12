@@ -121,7 +121,8 @@ cache tokens, web searches and fetches). The price comparison shows the cost per
 - Cache hits cost nothing and are marked `"cached": true`; demo mode reports zero usage.
 - A research cut off by a timeout cannot report the usage of its last request: its cost is marked
   `"incomplete": true` (shown as "mind. …"), or unknown (`"costKnown": false`, "Kosten unbekannt") if no
-  response arrived at all. The total is then incomplete as well.
+  response arrived at all. The total is then incomplete as well. A request the API rejected before any
+  work (HTTP 4xx such as an invalid key or a rate limit, except 408) costs a known 0 €.
 - The cost is an estimate from a price table (USD list prices, converted to euros). The built-in table
   covers the default models; `PRICE_TABLE` overrides or extends it without code changes:
 

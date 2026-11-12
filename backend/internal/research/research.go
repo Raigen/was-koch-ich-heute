@@ -3,6 +3,7 @@ package research
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -24,6 +25,32 @@ type Researcher interface {
 	SearchRecipes(ctx context.Context, q model.RecipeQuery) ([]model.Recipe, model.Usage, error)
 	// FindPrices looks up the ingredients in a shop's online assortment.
 	FindPrices(ctx context.Context, store model.Store, ingredients []model.Ingredient, postalCode string) (model.StorePrices, model.Usage, error)
+}
+
+// notBilledError marks an error where the provider certainly rejected the
+// request before doing (and billing) any work, e.g. an invalid API key or a
+// rate limit (HTTP 4xx), or where no request was sent at all.
+type notBilledError struct{ err error }
+
+func (e notBilledError) Error() string { return e.err.Error() }
+func (e notBilledError) Unwrap() error { return e.err }
+
+// notBilled wraps err as an error that caused no AI cost.
+func notBilled(err error) error { return notBilledError{err} }
+
+// IsNotBilled reports whether err certainly caused no AI cost. For other
+// errors without reported usage (timeouts, network errors), the cost is
+// unknown.
+func IsNotBilled(err error) bool {
+	var nb notBilledError
+	return errors.As(err, &nb)
+}
+
+// rejectedBeforeBilling reports whether an HTTP status means that the API
+// rejected the request without processing it. 408 (timeout) and 5xx errors
+// are excluded: work may have been done.
+func rejectedBeforeBilling(status int) bool {
+	return status >= 400 && status < 500 && status != 408
 }
 
 // Config selects and configures the provider.

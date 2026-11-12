@@ -184,12 +184,21 @@ func (c *Claude) run(ctx context.Context, system, prompt string, tools []anthrop
 		if err != nil {
 			var apiErr *anthropic.Error
 			if errors.As(err, &apiErr) {
+				var msg error
 				switch apiErr.StatusCode {
 				case 401, 403:
-					return "", usage, fmt.Errorf("Claude API: Zugang verweigert – ANTHROPIC_API_KEY prüfen (%d)", apiErr.StatusCode)
+					msg = fmt.Errorf("Claude API: Zugang verweigert – ANTHROPIC_API_KEY prüfen (%d)", apiErr.StatusCode)
 				case 429:
-					return "", usage, fmt.Errorf("Claude API: Rate-Limit erreicht, bitte später erneut versuchen")
+					msg = fmt.Errorf("Claude API: Rate-Limit erreicht, bitte später erneut versuchen")
+				default:
+					msg = fmt.Errorf("Claude API: %w", err)
 				}
+				// A rejected request costs nothing; the usage of earlier
+				// responses (pause_turn) stays as it is.
+				if rejectedBeforeBilling(apiErr.StatusCode) {
+					msg = notBilled(msg)
+				}
+				return "", usage, msg
 			}
 			return "", usage, fmt.Errorf("Claude API: %w", err)
 		}

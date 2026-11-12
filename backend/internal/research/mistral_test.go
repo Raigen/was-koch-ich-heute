@@ -115,6 +115,42 @@ func TestMistralUsageOnError(t *testing.T) {
 	}
 }
 
+// TestMistralNotBilled checks that a request rejected with 4xx is marked as
+// not billed, unless an earlier attempt failed with a server error.
+func TestMistralNotBilled(t *testing.T) {
+	run := func(statuses ...int) error {
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(statuses[min(calls, len(statuses)-1)])
+			calls++
+		}))
+		defer srv.Close()
+		m := NewMistral(Config{MistralAPIKey: "key", MistralBaseURL: srv.URL})
+		m.maxRetries = len(statuses) - 1
+		_, usage, err := m.SearchRecipes(context.Background(), model.RecipeQuery{Query: "dal"})
+		if err == nil || usage.Requests != 0 {
+			t.Fatalf("statuses %v: err=%v usage=%+v", statuses, err, usage)
+		}
+		return err
+	}
+	if err := run(http.StatusUnauthorized); !IsNotBilled(err) {
+		t.Errorf("401 should not be billed: %v", err)
+	}
+	if err := run(http.StatusTooManyRequests); !IsNotBilled(err) {
+		t.Errorf("429 should not be billed: %v", err)
+	}
+	if err := run(http.StatusInternalServerError); IsNotBilled(err) {
+		t.Errorf("500 may be billed: %v", err)
+	}
+	if err := run(http.StatusServiceUnavailable, http.StatusTooManyRequests); IsNotBilled(err) {
+		t.Errorf("a 429 after a server error may be billed: %v", err)
+	}
+	_, _, err := NewMistral(Config{MistralAPIKey: ""}).SearchRecipes(context.Background(), model.RecipeQuery{Query: "dal"})
+	if !IsNotBilled(err) {
+		t.Errorf("missing key sends no request: %v", err)
+	}
+}
+
 func TestNewProviderSelection(t *testing.T) {
 	for _, c := range []struct {
 		cfg  Config

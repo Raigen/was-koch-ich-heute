@@ -169,13 +169,26 @@ type recipeCacheEntry struct {
 	usage   model.Usage
 }
 
-// priceUsage computes the cost of a research call's usage. A request cut off
-// by a timeout or cancellation reports no usage although it may have been
-// billed: the cost is then marked incomplete (a lower bound), or unknown if
-// no response arrived at all (see pricing.PriceTable.Apply).
+// priceUsage computes the cost of a research call's usage.
+//   - A request cut off by a timeout or cancellation reports no usage
+//     although it may have been billed: the cost is marked incomplete (a
+//     lower bound), or unknown if no response arrived at all (see
+//     pricing.PriceTable.Apply).
+//   - If the provider certainly rejected the failing request before billing
+//     (research.IsNotBilled, e.g. an invalid key or a rate limit), the usage
+//     reported so far is complete; without any usage the cost is 0.
 func (s *Server) priceUsage(ctx context.Context, u *model.Usage, err error) {
 	s.prices.Apply(u)
-	if err != nil && ctx.Err() != nil && u.CostKnown && !u.Cached && u.Provider != "demo" {
+	if err == nil || u.Cached || u.Provider == "demo" {
+		return
+	}
+	if research.IsNotBilled(err) && ctx.Err() == nil {
+		if !u.CostKnown && u.Requests == 0 && u.TotalTokens() == 0 && u.WebSearches == 0 && u.WebFetches == 0 {
+			u.CostEUR, u.CostKnown = 0, true
+		}
+		return
+	}
+	if ctx.Err() != nil && u.CostKnown {
 		u.Incomplete = true
 	}
 }

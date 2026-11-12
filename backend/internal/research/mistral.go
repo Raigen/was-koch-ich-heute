@@ -202,7 +202,7 @@ func (m *Mistral) usage(resp mistralResponse) model.Usage {
 func (m *Mistral) run(ctx context.Context, system, prompt string) (string, model.Usage, error) {
 	usage := model.Usage{Provider: "mistral", Model: m.model}
 	if m.apiKey == "" {
-		return "", usage, errors.New("Mistral API: MISTRAL_API_KEY ist nicht gesetzt")
+		return "", usage, notBilled(errors.New("Mistral API: MISTRAL_API_KEY ist nicht gesetzt"))
 	}
 	req := mistralRequest{
 		Model:        m.model,
@@ -217,12 +217,18 @@ func (m *Mistral) run(ctx context.Context, system, prompt string) (string, model
 	}
 	body, err := json.Marshal(req)
 	if err != nil {
-		return "", usage, err
+		return "", usage, notBilled(err)
 	}
 
 	var resp mistralResponse
+	// mayBeBilled is set once an attempt failed in a way where the API may
+	// have done work (network error, timeout, server error).
+	mayBeBilled := false
 	for attempt := 0; ; attempt++ {
 		status, raw, err := m.post(ctx, "/v1/conversations", body)
+		if err != nil || (status >= 300 && !rejectedBeforeBilling(status)) {
+			mayBeBilled = true
+		}
 		retryable := err != nil || status == http.StatusTooManyRequests || status >= 500
 		if retryable && attempt < m.maxRetries && ctx.Err() == nil {
 			if err := sleep(ctx, time.Duration(1<<attempt)*2*time.Second); err != nil {
@@ -233,13 +239,20 @@ func (m *Mistral) run(ctx context.Context, system, prompt string) (string, model
 		if err != nil {
 			return "", usage, fmt.Errorf("Mistral API: %w", err)
 		}
+		var httpErr error
 		switch {
 		case status == http.StatusUnauthorized || status == http.StatusForbidden:
-			return "", usage, fmt.Errorf("Mistral API: Zugang verweigert – MISTRAL_API_KEY prüfen (%d)", status)
+			httpErr = fmt.Errorf("Mistral API: Zugang verweigert – MISTRAL_API_KEY prüfen (%d)", status)
 		case status == http.StatusTooManyRequests:
-			return "", usage, errors.New("Mistral API: Rate-Limit erreicht, bitte später erneut versuchen")
+			httpErr = errors.New("Mistral API: Rate-Limit erreicht, bitte später erneut versuchen")
 		case status >= 300:
-			return "", usage, fmt.Errorf("Mistral API: HTTP %d: %s", status, truncate(string(raw), 300))
+			httpErr = fmt.Errorf("Mistral API: HTTP %d: %s", status, truncate(string(raw), 300))
+		}
+		if httpErr != nil {
+			if !mayBeBilled {
+				httpErr = notBilled(httpErr)
+			}
+			return "", usage, httpErr
 		}
 		if err := json.Unmarshal(raw, &resp); err != nil {
 			return "", usage, fmt.Errorf("Mistral API: unerwartete Antwort: %w", err)

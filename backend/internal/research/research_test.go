@@ -151,6 +151,50 @@ func TestClaudeFallbackIterations(t *testing.T) {
 	}
 }
 
+// TestClaudeNotBilled checks which API errors are marked as certainly not
+// billed: 4xx rejections are, server errors are not, and the usage of
+// earlier responses is kept.
+func TestClaudeNotBilled(t *testing.T) {
+	for _, c := range []struct {
+		status    int
+		notBilled bool
+	}{{401, true}, {429, true}, {400, true}, {408, false}, {500, false}, {529, false}} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(c.status)
+			_, _ = io.WriteString(w, `{"type":"error","error":{"type":"some_error","message":"nope"}}`)
+		}))
+		cl := NewClaude(Config{APIKey: "test"})
+		cl.client = anthropic.NewClient(option.WithAPIKey("test"), option.WithBaseURL(srv.URL), option.WithMaxRetries(0))
+		_, usage, err := cl.SearchRecipes(context.Background(), model.RecipeQuery{Query: "dal"})
+		srv.Close()
+		if err == nil || IsNotBilled(err) != c.notBilled || usage.Requests != 0 {
+			t.Errorf("HTTP %d: err=%v notBilled=%v usage=%+v", c.status, err, IsNotBilled(err), usage)
+		}
+	}
+
+	// A rate limit on a pause_turn continuation keeps the first response's usage.
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls > 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"m","type":"message","role":"assistant","model":"claude-opus-5-5","stop_reason":"pause_turn",
+			"content":[{"type":"text","text":"…"}],"usage":{"input_tokens":100,"output_tokens":5}}`)
+	}))
+	defer srv.Close()
+	cl := NewClaude(Config{APIKey: "test"})
+	cl.client = anthropic.NewClient(option.WithAPIKey("test"), option.WithBaseURL(srv.URL), option.WithMaxRetries(0))
+	_, usage, err := cl.SearchRecipes(context.Background(), model.RecipeQuery{Query: "dal"})
+	if !IsNotBilled(err) || usage.Requests != 1 || usage.InputTokens != 100 {
+		t.Errorf("continuation: err=%v usage=%+v", err, usage)
+	}
+}
+
 func TestDemoUsageIsZero(t *testing.T) {
 	d := NewDemo()
 	d.Delay = 0
