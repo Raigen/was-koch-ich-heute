@@ -110,7 +110,7 @@ func TestRecipeMappingAndScaling(t *testing.T) {
 		{Name: "Rote Linsen", Quantity: 400, Unit: "g"},
 		{Name: "Olivenöl", Quantity: 2, Unit: "EL", Pantry: true},
 		{Name: "Kokosmilch", Quantity: 3, Unit: "Dose"},
-		{Name: "Zwiebel", Quantity: 1, Unit: ""},
+		{Name: "Zwiebel", Quantity: 1, Unit: "Stück"},
 		{Name: "Salz und Pfeffer", Quantity: 0, Unit: "", Pantry: true},
 	}
 	if !reflect.DeepEqual(r.Ingredients, want) {
