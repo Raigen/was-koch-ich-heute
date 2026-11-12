@@ -1,5 +1,7 @@
 # Was koch ich heute? 🍲
 
+[![CI](https://github.com/Raigen/was-koch-ich-heute/actions/workflows/ci.yml/badge.svg)](https://github.com/Raigen/was-koch-ich-heute/actions/workflows/ci.yml)
+
 *"What should I cook today?"*: a web app for budget-friendly cooking. An AI researches recipes on the
 web, looks up every ingredient in the online shops and offers of German supermarkets (REWE, EDEKA,
 ALDI SÜD/Nord, Lidl, PENNY, Kaufland) and compares the prices per shop and as the cheapest basket
@@ -67,6 +69,11 @@ Tests:
 ```bash
 make test   # go vet + go test, frontend type check
 ```
+
+GitHub Actions (`.github/workflows/ci.yml`) runs on every push to `main` and every pull request:
+- gofmt, `go vet` and `go test -race`,
+- the frontend type check and build,
+- a Docker image build plus a smoke test of the container in demo mode.
 
 ## How it works
 
