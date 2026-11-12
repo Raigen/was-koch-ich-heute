@@ -35,9 +35,15 @@ func main() {
 	}
 
 	parallel, _ := strconv.Atoi(os.Getenv("PRICE_PARALLEL"))
+	storeTimeout, err := parseDuration(os.Getenv("STORE_TIMEOUT"))
+	if err != nil {
+		slog.Error("STORE_TIMEOUT ungültig (Beispiel: 3m, 90s)", "err", err)
+		os.Exit(1)
+	}
 	srv := api.New(researcher, api.Options{
-		StaticDir: os.Getenv("STATIC_DIR"),
-		Parallel:  parallel,
+		StaticDir:    os.Getenv("STATIC_DIR"),
+		Parallel:     parallel,
+		StoreTimeout: storeTimeout,
 	})
 
 	addr := os.Getenv("ADDR")
@@ -65,4 +71,11 @@ func main() {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	_ = httpSrv.Shutdown(ctx)
+}
+
+func parseDuration(v string) (time.Duration, error) {
+	if v == "" {
+		return 0, nil
+	}
+	return time.ParseDuration(v)
 }

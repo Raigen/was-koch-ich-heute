@@ -70,6 +70,7 @@ type StorePrices struct {
 	Offers   []Offer  `json:"offers"`
 	NotFound []string `json:"notFound"`
 	Error    string   `json:"error,omitempty"`
+	TimedOut bool     `json:"timedOut,omitempty"`
 	Cached   bool     `json:"cached"`
 }
 

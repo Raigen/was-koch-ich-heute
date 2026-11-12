@@ -74,12 +74,12 @@ func (c *Claude) SearchRecipes(ctx context.Context, q model.RecipeQuery) ([]mode
 func (c *Claude) FindPrices(ctx context.Context, store model.Store, ingredients []model.Ingredient, postalCode string) (model.StorePrices, error) {
 	tools := []anthropic.BetaToolUnionParam{
 		{OfWebSearchTool20260209: &anthropic.BetaWebSearchTool20260209Param{
-			MaxUses:        anthropic.Int(int64(min(4+2*len(ingredients), 20))),
+			MaxUses:        anthropic.Int(int64(min(3+len(ingredients), 12))),
 			AllowedDomains: store.Domains,
 			UserLocation:   germanLocation(),
 		}},
 		{OfWebFetchTool20260209: &anthropic.BetaWebFetchTool20260209Param{
-			MaxUses:          anthropic.Int(int64(min(2+len(ingredients), 12))),
+			MaxUses:          anthropic.Int(int64(min(2+len(ingredients)/2, 6))),
 			MaxContentTokens: anthropic.Int(15000),
 			AllowedDomains:   store.Domains,
 		}},

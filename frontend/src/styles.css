@@ -60,6 +60,8 @@ h3 { margin: 0 0 10px; font-size: 1.05rem; }
 .notice { background: var(--warn-bg); color: var(--warn-text); padding: 10px 14px; border-radius: var(--radius); margin-bottom: 16px; }
 .error { background: var(--error-bg); color: var(--error-text); padding: 10px 14px; border-radius: var(--radius); margin: 12px 0; }
 p.error { padding: 6px 10px; }
+.notice.retry { display: flex; gap: 12px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+.notice.retry .btn-secondary { margin-top: 0; }
 .empty, .loading { padding: 32px; text-align: center; color: var(--muted); }
 
 .panel { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 18px; box-shadow: var(--shadow); }

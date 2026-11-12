@@ -58,6 +58,7 @@ export interface StorePrices {
   offers: Offer[];
   notFound: string[];
   error?: string;
+  timedOut?: boolean;
   cached: boolean;
 }
 
@@ -85,4 +86,6 @@ export interface AppConfig {
 export type PriceEvent =
   | { type: "store"; store: StorePrices }
   | { type: "summary"; comparison: Comparison }
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  // Lebenszeichen des Backends, damit Proxys die Verbindung offen halten.
+  | { type: "ping" };

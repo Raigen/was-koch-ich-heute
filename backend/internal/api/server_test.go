@@ -2,11 +2,14 @@ package api
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/raigen/was-koch-ich-heute/backend/internal/model"
 	"github.com/raigen/was-koch-ich-heute/backend/internal/research"
@@ -73,5 +76,71 @@ func TestPriceCompareStream(t *testing.T) {
 	}
 	if len(last.Comparison.StoreTotals) != 2 || last.Comparison.MixTotal <= 0 {
 		t.Errorf("unerwarteter Vergleich: %+v", last.Comparison)
+	}
+}
+
+// slowResearcher hängt bei einem Shop, bis der Kontext abläuft, und zählt Aufrufe.
+type slowResearcher struct {
+	research.Demo
+	slowStore string
+	calls     map[string]int
+	mu        sync.Mutex
+}
+
+func (s *slowResearcher) FindPrices(ctx context.Context, st model.Store, ings []model.Ingredient, plz string) (model.StorePrices, error) {
+	s.mu.Lock()
+	s.calls[st.ID]++
+	s.mu.Unlock()
+	if st.ID == s.slowStore {
+		<-ctx.Done()
+		return model.StorePrices{}, ctx.Err()
+	}
+	return s.Demo.FindPrices(ctx, st, ings, plz)
+}
+
+func TestPriceCompareTimeoutHeartbeatAndRetry(t *testing.T) {
+	r := &slowResearcher{slowStore: "edeka", calls: map[string]int{}}
+	ts := httptest.NewServer(New(r, Options{StoreTimeout: 1500 * time.Millisecond, Heartbeat: 50 * time.Millisecond}).Handler())
+	defer ts.Close()
+
+	run := func() (map[string]model.StorePrices, int) {
+		body := `{"ingredients":[{"name":"Reis","quantity":250,"unit":"g"}],"storeIds":["rewe","edeka"]}`
+		resp, err := http.Post(ts.URL+"/api/prices/compare", "application/json", strings.NewReader(body))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		stores, pings := map[string]model.StorePrices{}, 0
+		sc := bufio.NewScanner(resp.Body)
+		for sc.Scan() {
+			var ev priceEvent
+			if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+				t.Fatal(err)
+			}
+			switch ev.Type {
+			case "store":
+				stores[ev.Store.StoreID] = *ev.Store
+			case "ping":
+				pings++
+			}
+		}
+		return stores, pings
+	}
+
+	stores, pings := run()
+	if !stores["edeka"].TimedOut || !strings.Contains(stores["edeka"].Error, "Zeitüberschreitung") {
+		t.Errorf("edeka sollte Zeitüberschreitung melden: %+v", stores["edeka"])
+	}
+	if stores["rewe"].Error != "" || len(stores["rewe"].Offers) == 0 {
+		t.Errorf("rewe sollte trotzdem Ergebnisse liefern: %+v", stores["rewe"])
+	}
+	if pings < 2 {
+		t.Errorf("erwartet Lebenszeichen im Stream, bekommen %d", pings)
+	}
+
+	// Erneuter Versuch: rewe kommt aus dem Cache, nur edeka wird neu recherchiert.
+	stores, _ = run()
+	if !stores["rewe"].Cached || r.calls["rewe"] != 1 || r.calls["edeka"] != 2 {
+		t.Errorf("Retry: rewe cached=%v, Aufrufe=%v", stores["rewe"].Cached, r.calls)
 	}
 }

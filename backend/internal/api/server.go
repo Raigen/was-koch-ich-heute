@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -30,6 +31,12 @@ type Server struct {
 	recipeTTL   time.Duration
 	priceTTL    time.Duration
 	callTimeout time.Duration
+	// storeTimeout begrenzt die Recherche eines einzelnen Shops, damit ein
+	// hängender Shop nicht den ganzen Vergleich aufhält.
+	storeTimeout time.Duration
+	// heartbeat ist der Abstand der "ping"-Zeilen im Preis-Stream. Sie halten
+	// die Verbindung durch Reverse-Proxys (nginx: 60 s Standard) offen.
+	heartbeat time.Duration
 }
 
 // Options konfiguriert den Server.
@@ -38,20 +45,32 @@ type Options struct {
 	StaticDir string
 	// Parallel begrenzt gleichzeitige Shop-Recherchen.
 	Parallel int
+	// StoreTimeout ist die maximale Recherchedauer pro Shop (Standard 3 min).
+	StoreTimeout time.Duration
+	// Heartbeat ist der Abstand der Lebenszeichen im Stream (Standard 15 s).
+	Heartbeat time.Duration
 }
 
 func New(r research.Researcher, opts Options) *Server {
 	if opts.Parallel < 1 {
 		opts.Parallel = 4
 	}
+	if opts.StoreTimeout <= 0 {
+		opts.StoreTimeout = 3 * time.Minute
+	}
+	if opts.Heartbeat <= 0 {
+		opts.Heartbeat = 15 * time.Second
+	}
 	return &Server{
-		researcher:  r,
-		cache:       newTTLCache(),
-		parallel:    opts.Parallel,
-		staticDir:   opts.StaticDir,
-		recipeTTL:   24 * time.Hour,
-		priceTTL:    6 * time.Hour,
-		callTimeout: 8 * time.Minute,
+		storeTimeout: opts.StoreTimeout,
+		heartbeat:    opts.Heartbeat,
+		researcher:   r,
+		cache:        newTTLCache(),
+		parallel:     opts.Parallel,
+		staticDir:    opts.StaticDir,
+		recipeTTL:    24 * time.Hour,
+		priceTTL:     6 * time.Hour,
+		callTimeout:  8 * time.Minute,
 	}
 }
 
@@ -128,7 +147,7 @@ func (s *Server) handleRecipeSearch(w http.ResponseWriter, r *http.Request) {
 
 // priceEvent ist eine Zeile im NDJSON-Stream von /api/prices/compare.
 type priceEvent struct {
-	Type       string             `json:"type"` // "store" | "summary" | "error"
+	Type       string             `json:"type"` // "store" | "summary" | "error" | "ping"
 	Store      *model.StorePrices `json:"store,omitempty"`
 	Comparison *model.Comparison  `json:"comparison,omitempty"`
 	Message    string             `json:"message,omitempty"`
@@ -181,17 +200,41 @@ func (s *Server) handlePriceCompare(w http.ResponseWriter, r *http.Request) {
 
 	enc := json.NewEncoder(w)
 	var writeMu sync.Mutex
+	finished := false // nach Ende des Handlers darf nicht mehr geschrieben werden
 	emit := func(ev priceEvent) {
 		writeMu.Lock()
 		defer writeMu.Unlock()
+		if finished {
+			return
+		}
 		_ = enc.Encode(ev)
 		if flusher != nil {
 			flusher.Flush()
 		}
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), s.callTimeout)
-	defer cancel()
+	// Lebenszeichen senden, solange recherchiert wird.
+	done := make(chan struct{})
+	defer func() {
+		close(done)
+		writeMu.Lock()
+		finished = true
+		writeMu.Unlock()
+	}()
+	go func() {
+		t := time.NewTicker(s.heartbeat)
+		defer t.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-r.Context().Done():
+				return
+			case <-t.C:
+				emit(priceEvent{Type: "ping"})
+			}
+		}
+	}()
 
 	results := make([]model.StorePrices, len(stores))
 	sem := make(chan struct{}, s.parallel)
@@ -200,36 +243,7 @@ func (s *Server) handlePriceCompare(w http.ResponseWriter, r *http.Request) {
 		wg.Add(1)
 		go func(i int, st model.Store) {
 			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-
-			cacheKey := "prices:" + hashKey(struct {
-				S string
-				I []model.Ingredient
-				P string
-			}{st.ID, ingredients, plz})
-			var sp model.StorePrices
-			if v, ok := s.cache.get(cacheKey); ok {
-				sp = v.(model.StorePrices)
-				sp.Cached = true
-			} else {
-				var err error
-				sp, err = s.researcher.FindPrices(ctx, st, ingredients, plz)
-				sp.StoreID = st.ID
-				if err != nil {
-					slog.Error("Preisrecherche fehlgeschlagen", "store", st.ID, "err", err)
-					sp.Error = err.Error()
-				} else {
-					pricing.Enrich(&sp, ingredients)
-					s.cache.set(cacheKey, sp, s.priceTTL)
-				}
-			}
-			if sp.Offers == nil {
-				sp.Offers = []model.Offer{}
-			}
-			if sp.NotFound == nil {
-				sp.NotFound = []string{}
-			}
+			sp := s.storePrices(r.Context(), sem, st, ingredients, plz)
 			results[i] = sp
 			emit(priceEvent{Type: "store", Store: &sp})
 		}(i, st)
@@ -238,6 +252,65 @@ func (s *Server) handlePriceCompare(w http.ResponseWriter, r *http.Request) {
 
 	cmp := pricing.Compare(ingredients, results)
 	emit(priceEvent{Type: "summary", Comparison: &cmp})
+}
+
+// storePrices liefert die Preise eines Shops aus dem Cache oder recherchiert
+// sie mit eigenem Zeitlimit. Gecachte Ergebnisse warten nicht auf einen
+// freien Recherche-Platz; so kommen sie bei einem erneuten Versuch sofort.
+func (s *Server) storePrices(ctx context.Context, sem chan struct{}, st model.Store, ingredients []model.Ingredient, plz string) model.StorePrices {
+	cacheKey := "prices:" + hashKey(struct {
+		S string
+		I []model.Ingredient
+		P string
+	}{st.ID, ingredients, plz})
+
+	var sp model.StorePrices
+	if v, ok := s.cache.get(cacheKey); ok {
+		sp = v.(model.StorePrices)
+		sp.Cached = true
+	} else {
+		select {
+		case sem <- struct{}{}:
+			defer func() { <-sem }()
+		case <-ctx.Done():
+			return model.StorePrices{StoreID: st.ID, Error: "Abgebrochen", Offers: []model.Offer{}, NotFound: []string{}}
+		}
+		storeCtx, cancel := context.WithTimeout(ctx, s.storeTimeout)
+		defer cancel()
+
+		var err error
+		sp, err = s.researcher.FindPrices(storeCtx, st, ingredients, plz)
+		sp.StoreID = st.ID
+		switch {
+		case err != nil && errors.Is(storeCtx.Err(), context.DeadlineExceeded):
+			slog.Warn("Preisrecherche: Zeitüberschreitung", "store", st.ID, "limit", s.storeTimeout)
+			sp.Error = fmt.Sprintf("Zeitüberschreitung: keine Antwort nach %s", formatDuration(s.storeTimeout))
+			sp.TimedOut = true
+		case err != nil:
+			slog.Error("Preisrecherche fehlgeschlagen", "store", st.ID, "err", err)
+			sp.Error = err.Error()
+		default:
+			pricing.Enrich(&sp, ingredients)
+			s.cache.set(cacheKey, sp, s.priceTTL)
+		}
+	}
+	if sp.Offers == nil {
+		sp.Offers = []model.Offer{}
+	}
+	if sp.NotFound == nil {
+		sp.NotFound = []string{}
+	}
+	return sp
+}
+
+func formatDuration(d time.Duration) string {
+	if d%time.Minute == 0 {
+		return fmt.Sprintf("%d min", int(d/time.Minute))
+	}
+	if d%time.Second == 0 {
+		return fmt.Sprintf("%d s", int(d/time.Second))
+	}
+	return d.String()
 }
 
 // ---------------------------------------------------------------------------

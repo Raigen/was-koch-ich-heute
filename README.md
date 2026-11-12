@@ -109,8 +109,28 @@ ohne Go-SDK per REST angebunden wird.
 | `MISTRAL_REASONING_EFFORT` | optional, nur für Reasoning-Modelle | – |
 | `MISTRAL_WEB_SEARCH` | `standard` oder `premium` | `standard` |
 | `PRICE_PARALLEL` | gleichzeitige Shop-Recherchen | `4` |
+| `STORE_TIMEOUT` | maximale Recherchedauer pro Shop, z. B. `3m`, `90s` | `3m` |
 | `ADDR` | Listen-Adresse | `:8080` |
 | `STATIC_DIR` | Pfad zum gebauten Frontend | – |
+
+## Betrieb hinter einem Reverse-Proxy
+
+Der Preisvergleich streamt Ergebnisse über mehrere Minuten. Das Backend sendet alle 15 Sekunden ein
+Lebenszeichen (`{"type":"ping"}`), damit Proxys die Verbindung nicht wegen Inaktivität schließen, und
+setzt `X-Accel-Buffering: no` gegen Pufferung in nginx. Das gesamte Zeitlimit muss trotzdem passen:
+
+```nginx
+location / {
+    proxy_pass http://127.0.0.1:8080;
+    proxy_buffering off;
+    proxy_read_timeout 600s;
+}
+```
+
+Caddy (`reverse_proxy 127.0.0.1:8080`) funktioniert ohne weitere Einstellungen.
+
+Shops, die das Zeitlimit (`STORE_TIMEOUT`) überschreiten oder fehlschlagen, werden einzeln markiert. Über
+„Fehlgeschlagene erneut versuchen“ werden nur diese neu recherchiert; die übrigen kommen aus dem Cache.
 
 ## Grenzen
 
