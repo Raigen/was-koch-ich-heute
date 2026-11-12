@@ -2,15 +2,15 @@ services:
   app:
     build:
       context: .
-      # Der Build lädt npm- und Go-Pakete über das Netzwerk des Hosts.
-      # Unter Windows/WSL (v. a. mit VPN) hängt das Docker-Bridge-Netz
-      # sonst oft minutenlang bei "npm ci" und "go mod download".
+      # The build downloads npm and Go packages via the host network.
+      # On Windows/WSL (especially with a VPN) the Docker bridge network
+      # otherwise often hangs for minutes at "npm ci" and "go mod download".
       network: host
     image: was-koch-ich-heute:latest
     ports:
       - "8080:8080"
-    # API-Keys und Einstellungen aus .env (siehe .env.example).
-    # Ohne Key startet die App im Demo-Modus.
+    # API keys and settings from .env (see .env.example).
+    # Without a key the app starts in demo mode.
     env_file:
       - path: .env
         required: false

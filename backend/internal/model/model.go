@@ -1,8 +1,8 @@
-// Package model enthält die Datentypen, die zwischen Backend und Frontend
-// ausgetauscht werden.
+// Package model contains the data types exchanged between backend and frontend.
+// Keep in sync with frontend/src/types.ts.
 package model
 
-// Store beschreibt einen Lebensmittelhändler mit Online-Shop bzw. Online-Prospekt.
+// Store describes a grocery retailer with an online shop or online flyer.
 type Store struct {
 	ID      string   `json:"id"`
 	Name    string   `json:"name"`
@@ -10,16 +10,16 @@ type Store struct {
 	Color   string   `json:"color"`
 }
 
-// Ingredient ist eine Zutat eines Rezepts.
+// Ingredient is an ingredient of a recipe.
 type Ingredient struct {
 	Name     string  `json:"name"`
 	Quantity float64 `json:"quantity"`
 	Unit     string  `json:"unit"`
-	// Pantry markiert Grundzutaten (Salz, Pfeffer, Öl …), die meist schon im Haus sind.
+	// Pantry marks staples (salt, pepper, oil …) that people usually have at home.
 	Pantry bool `json:"pantry"`
 }
 
-// Recipe ist ein recherchiertes Rezept.
+// Recipe is a researched recipe.
 type Recipe struct {
 	ID               string       `json:"id"`
 	Title            string       `json:"title"`
@@ -31,11 +31,11 @@ type Recipe struct {
 	Difficulty       string       `json:"difficulty"`
 	Ingredients      []Ingredient `json:"ingredients"`
 	Steps            []string     `json:"steps"`
-	// EstimatedCostEUR ist eine grobe KI-Schätzung, bevor echte Preise recherchiert wurden.
+	// EstimatedCostEUR is a rough AI estimate made before real prices are researched.
 	EstimatedCostEUR float64 `json:"estimatedCostEur"`
 }
 
-// RecipeQuery ist die Suchanfrage für Rezepte.
+// RecipeQuery is a recipe search request.
 type RecipeQuery struct {
 	Query       string  `json:"query"`
 	Servings    int     `json:"servings"`
@@ -45,7 +45,7 @@ type RecipeQuery struct {
 	ExcludeText string  `json:"exclude"`
 }
 
-// Offer ist ein konkretes Produkt in einem Shop, das zu einer Zutat passt.
+// Offer is a concrete product in a shop that matches an ingredient.
 type Offer struct {
 	StoreID       string  `json:"storeId"`
 	Ingredient    string  `json:"ingredient"`
@@ -53,8 +53,8 @@ type Offer struct {
 	Price         float64 `json:"price"`
 	PackageAmount float64 `json:"packageAmount"`
 	PackageUnit   string  `json:"packageUnit"`
-	// PackagesNeeded wird im Backend aus Rezeptmenge und Packungsgröße berechnet,
-	// wenn die Einheiten vergleichbar sind; sonst gilt der Wert der KI.
+	// PackagesNeeded is computed in the backend from the recipe quantity and the
+	// package size when the units are comparable; otherwise the AI's value is used.
 	PackagesNeeded int     `json:"packagesNeeded"`
 	Cost           float64 `json:"cost"`
 	UnitPrice      string  `json:"unitPrice"`
@@ -64,7 +64,7 @@ type Offer struct {
 	Note           string  `json:"note"`
 }
 
-// StorePrices ist das Rechercheergebnis für einen Shop.
+// StorePrices is the research result for one shop.
 type StorePrices struct {
 	StoreID  string   `json:"storeId"`
 	Offers   []Offer  `json:"offers"`
@@ -74,14 +74,14 @@ type StorePrices struct {
 	Cached   bool     `json:"cached"`
 }
 
-// PriceRequest fragt Preise für eine Zutatenliste in mehreren Shops an.
+// PriceRequest asks for prices of an ingredient list in several shops.
 type PriceRequest struct {
 	Ingredients []Ingredient `json:"ingredients"`
 	StoreIDs    []string     `json:"storeIds"`
 	PostalCode  string       `json:"postalCode"`
 }
 
-// StoreTotal ist die Summe eines Warenkorbs in einem einzelnen Shop.
+// StoreTotal is the basket total in a single shop.
 type StoreTotal struct {
 	StoreID string   `json:"storeId"`
 	Total   float64  `json:"total"`
@@ -89,16 +89,16 @@ type StoreTotal struct {
 	Missing []string `json:"missing"`
 }
 
-// MixItem ist eine Position im günstigsten, shopübergreifenden Warenkorb.
+// MixItem is one line of the cheapest basket across all shops.
 type MixItem struct {
 	Ingredient string `json:"ingredient"`
 	Offer      *Offer `json:"offer"`
 }
 
-// Comparison fasst die Preise aller Shops zusammen.
+// Comparison summarizes the prices of all shops.
 type Comparison struct {
 	StoreTotals []StoreTotal `json:"storeTotals"`
-	// CheapestStoreID ist der günstigste Shop unter denen mit den meisten gefundenen Zutaten.
+	// CheapestStoreID is the cheapest shop among those with the most ingredients found.
 	CheapestStoreID string    `json:"cheapestStoreId"`
 	Mix             []MixItem `json:"mix"`
 	MixTotal        float64   `json:"mixTotal"`

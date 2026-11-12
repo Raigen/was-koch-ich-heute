@@ -7,7 +7,7 @@ async function json<T>(res: Response): Promise<T> {
       const body = await res.json();
       if (body?.error) msg = body.error;
     } catch {
-      /* Antwort war kein JSON */
+      /* response was not JSON */
     }
     throw new Error(msg);
   }
@@ -28,8 +28,8 @@ export async function searchRecipes(q: RecipeQuery, signal?: AbortSignal): Promi
 }
 
 /**
- * Startet den Preisvergleich. Das Backend streamt NDJSON: eine Zeile pro Shop,
- * sobald dessen Recherche fertig ist, und am Ende eine Zusammenfassung.
+ * Starts the price comparison. The backend streams NDJSON: one line per shop as
+ * soon as its research is done, keep-alive pings, and a final summary.
  */
 export async function comparePrices(
   ingredients: Ingredient[],

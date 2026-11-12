@@ -15,21 +15,21 @@ import (
 
 const (
 	defaultClaudeModel = "claude-opus-5-5"
-	// maxContinuations begrenzt, wie oft eine durch die serverseitige
-	// Web-Suche pausierte Antwort (stop_reason "pause_turn") fortgesetzt wird.
+	// maxContinuations limits how often a response paused by the server-side
+	// web search (stop_reason "pause_turn") is resumed.
 	maxContinuations = 5
 )
 
-// Claude recherchiert mit der Anthropic API und den serverseitigen Werkzeugen
-// web_search und web_fetch.
+// Claude researches via the Anthropic API using the server-side tools
+// web_search and web_fetch.
 type Claude struct {
 	client anthropic.Client
 	model  string
 	effort anthropic.BetaOutputConfigEffort
 }
 
-// NewClaude erzeugt einen Claude-Researcher. Ist cfg.APIKey leer, liest das
-// SDK die Zugangsdaten aus der Umgebung (ANTHROPIC_API_KEY o. ä.).
+// NewClaude creates a Claude researcher. If cfg.APIKey is empty, the SDK
+// reads credentials from the environment (ANTHROPIC_API_KEY etc.).
 func NewClaude(cfg Config) *Claude {
 	opts := []option.RequestOption{option.WithRequestTimeout(6 * time.Minute)}
 	if cfg.APIKey != "" {
@@ -49,15 +49,15 @@ func NewClaude(cfg Config) *Claude {
 func (c *Claude) Name() string { return "Claude (" + c.model + ")" }
 
 const (
-	claudeRecipeTools = "Nutze das Werkzeug web_search und öffne vielversprechende Treffer bei Bedarf mit web_fetch, um die Zutatenliste exakt zu übernehmen."
-	claudePriceTools  = "Nutze web_search (die Suche ist auf die Domains des Supermarkts beschränkt) und bei Bedarf web_fetch für Produktseiten."
+	claudeRecipeTools = "Use the web_search tool and, if needed, open promising results with web_fetch to copy the exact ingredient list."
+	claudePriceTools  = "Use web_search (the search is restricted to the supermarket's domains) and, if needed, web_fetch for product pages."
 )
 
 func germanLocation() anthropic.BetaUserLocationParam {
 	return anthropic.BetaUserLocationParam{Country: anthropic.String("DE"), Timezone: anthropic.String("Europe/Berlin")}
 }
 
-// SearchRecipes recherchiert Rezepte über die Web-Suche.
+// SearchRecipes researches recipes via web search.
 func (c *Claude) SearchRecipes(ctx context.Context, q model.RecipeQuery) ([]model.Recipe, error) {
 	tools := []anthropic.BetaToolUnionParam{
 		{OfWebSearchTool20260209: &anthropic.BetaWebSearchTool20260209Param{MaxUses: anthropic.Int(8), UserLocation: germanLocation()}},
@@ -70,7 +70,7 @@ func (c *Claude) SearchRecipes(ctx context.Context, q model.RecipeQuery) ([]mode
 	return parseRecipes(text)
 }
 
-// FindPrices recherchiert die Preise der Zutaten bei einem Händler.
+// FindPrices researches the ingredient prices at one retailer.
 func (c *Claude) FindPrices(ctx context.Context, store model.Store, ingredients []model.Ingredient, postalCode string) (model.StorePrices, error) {
 	tools := []anthropic.BetaToolUnionParam{
 		{OfWebSearchTool20260209: &anthropic.BetaWebSearchTool20260209Param{
@@ -91,8 +91,10 @@ func (c *Claude) FindPrices(ctx context.Context, store model.Store, ingredients 
 	return parsePrices(store, text)
 }
 
-// run führt eine Anfrage mit serverseitigen Werkzeugen aus, setzt pausierte
-// Antworten fort und liefert den gesamten Text der letzten Antwort.
+// run sends a request with server-side tools, resumes paused responses and
+// returns the full text of the final response.
+//
+// Returned errors are shown in the German UI, hence German messages.
 func (c *Claude) run(ctx context.Context, system, prompt string, tools []anthropic.BetaToolUnionParam) (string, error) {
 	params := anthropic.BetaMessageNewParams{
 		Model:     c.model,
@@ -103,8 +105,8 @@ func (c *Claude) run(ctx context.Context, system, prompt string, tools []anthrop
 			anthropic.NewBetaUserMessage(anthropic.NewBetaTextBlock(prompt)),
 		},
 		OutputConfig: anthropic.BetaOutputConfigParam{Effort: c.effort},
-		// Lehnt ein Sicherheitsfilter die Anfrage ab, beantwortet automatisch
-		// ein passendes Ausweichmodell sie im selben Aufruf.
+		// If a safety classifier declines the request, a suitable fallback
+		// model answers it within the same call.
 		Fallbacks: anthropic.BetaFallbacksParamOfDefault(),
 		Betas:     []anthropic.AnthropicBeta{anthropic.AnthropicBetaServerSideFallback2026_07_01},
 	}
@@ -129,13 +131,13 @@ func (c *Claude) run(ctx context.Context, system, prompt string, tools []anthrop
 			if i >= maxContinuations {
 				return "", errors.New("Recherche hat zu lange gedauert (zu viele Fortsetzungen)")
 			}
-			// Server-seitige Werkzeugschleife fortsetzen: Antwort anhängen und erneut senden.
+			// Resume the server-side tool loop: append the response and resend.
 			params.Messages = append(params.Messages, resp.ToParam())
 			continue
 		case anthropic.BetaStopReasonRefusal:
 			return "", errors.New("die Anfrage wurde vom Modell abgelehnt")
 		case anthropic.BetaStopReasonMaxTokens:
-			// Trotzdem versuchen, das (evtl. vollständige) JSON zu lesen.
+			// Still try to parse the (possibly complete) JSON.
 		}
 
 		var sb strings.Builder
@@ -148,5 +150,5 @@ func (c *Claude) run(ctx context.Context, system, prompt string, tools []anthrop
 	}
 }
 
-// Sicherstellen, dass Claude die Schnittstelle erfüllt.
+// Ensure Claude implements the interface.
 var _ Researcher = (*Claude)(nil)

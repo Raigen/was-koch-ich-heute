@@ -19,9 +19,11 @@ const (
 	defaultMistralBaseURL = "https://api.mistral.ai"
 )
 
-// Mistral recherchiert über die Mistral Conversations API (/v1/conversations)
-// mit dem eingebauten Werkzeug web_search. Für Go gibt es kein offizielles
-// Mistral-SDK, daher wird die REST-API direkt angesprochen.
+// Mistral researches via the Mistral Conversations API (/v1/conversations)
+// with the built-in web_search tool. There is no official Mistral SDK for Go,
+// so the REST API is called directly.
+//
+// Returned errors are shown in the German UI, hence German messages.
 type Mistral struct {
 	apiKey          string
 	baseURL         string
@@ -32,7 +34,7 @@ type Mistral struct {
 	maxRetries      int
 }
 
-// NewMistral erzeugt einen Mistral-Researcher.
+// NewMistral creates a Mistral researcher.
 func NewMistral(cfg Config) *Mistral {
 	m := &Mistral{
 		apiKey:          cfg.MistralAPIKey,
@@ -50,7 +52,7 @@ func NewMistral(cfg Config) *Mistral {
 		m.model = defaultMistralModel
 	}
 	if strings.EqualFold(cfg.MistralWebSearch, "premium") {
-		// Premium-Suche bezieht zusätzlich Nachrichtenquellen ein.
+		// Premium search additionally includes news sources.
 		m.searchTool = "web_search_premium"
 	}
 	return m
@@ -59,9 +61,9 @@ func NewMistral(cfg Config) *Mistral {
 func (m *Mistral) Name() string { return "Mistral (" + m.model + ")" }
 
 const (
-	mistralRecipeTools = "Nutze das Werkzeug web_search für die Recherche."
-	mistralPriceTools  = "Nutze das Werkzeug web_search und suche gezielt auf den Websites des Supermarkts " +
-		"(z. B. mit \"site:<domain> <Produkt>\"). Ergebnisse anderer Websites zählen nicht als Shoppreis."
+	mistralRecipeTools = "Use the web_search tool for your research."
+	mistralPriceTools  = "Use the web_search tool and search specifically on the supermarket's websites " +
+		"(e.g. with \"site:<domain> <product>\"). Results from other websites do not count as a shop price."
 )
 
 func (m *Mistral) SearchRecipes(ctx context.Context, q model.RecipeQuery) ([]model.Recipe, error) {
@@ -81,8 +83,8 @@ func (m *Mistral) FindPrices(ctx context.Context, store model.Store, ingredients
 	if err != nil {
 		return sp, err
 	}
-	// Die Mistral-Websuche lässt sich nicht auf Domains beschränken; Links zu
-	// fremden Seiten werden daher verworfen und die Vertrauensstufe gesenkt.
+	// Mistral's web search cannot be restricted to domains, so links to other
+	// sites are dropped and the confidence is lowered.
 	for i := range sp.Offers {
 		o := &sp.Offers[i]
 		if o.URL != "" && !urlMatchesDomains(o.URL, store.Domains) {
@@ -95,7 +97,7 @@ func (m *Mistral) FindPrices(ctx context.Context, store model.Store, ingredients
 	return sp, nil
 }
 
-// --- Wire-Format der Conversations API -------------------------------------
+// --- Conversations API wire format ------------------------------------------
 
 type mistralTool struct {
 	Type string `json:"type"`
@@ -112,7 +114,7 @@ type mistralRequest struct {
 	Tools          []mistralTool          `json:"tools,omitempty"`
 	CompletionArgs *mistralCompletionArgs `json:"completion_args,omitempty"`
 	Stream         bool                   `json:"stream"`
-	// Store=false: Die Unterhaltung wird nicht serverseitig gespeichert.
+	// Store=false: the conversation is not stored server-side.
 	Store bool `json:"store"`
 }
 
@@ -123,7 +125,7 @@ type mistralChunk struct {
 	URL   string `json:"url"`
 }
 
-// mistralContent ist entweder ein String oder eine Liste von Chunks.
+// mistralContent is either a string or a list of chunks.
 type mistralContent []mistralChunk
 
 func (c *mistralContent) UnmarshalJSON(data []byte) error {

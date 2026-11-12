@@ -21,6 +21,6 @@ export function storageSet(key: string, value: unknown) {
   try {
     localStorage.setItem(key, JSON.stringify(value));
   } catch {
-    /* Speicher nicht verfügbar – egal */
+    /* storage unavailable – ignore */
   }
 }

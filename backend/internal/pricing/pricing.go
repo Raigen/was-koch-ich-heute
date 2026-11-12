@@ -1,6 +1,6 @@
-// Package pricing berechnet Packungsanzahl, Kosten und den Preisvergleich
-// zwischen den Shops. Die Rechnung passiert bewusst im Backend und nicht in
-// der KI, damit Summen nachvollziehbar und korrekt sind.
+// Package pricing computes package counts, costs and the price comparison
+// across shops. The arithmetic deliberately happens in the backend, not in
+// the AI, so that totals are correct and traceable.
 package pricing
 
 import (
@@ -23,8 +23,8 @@ var units = map[string]unitInfo{
 	"stück": {"stk", 1}, "stk": {"stk", 1}, "stk.": {"stk", 1}, "st.": {"stk", 1}, "st": {"stk", 1}, "x": {"stk", 1},
 }
 
-// normalize rechnet eine Menge in ihre Basiseinheit um. ok ist false, wenn
-// die Einheit unbekannt ist; dann ist base die kleingeschriebene Einheit.
+// normalize converts a quantity to its base unit. ok is false if the unit is
+// unknown; base is then the lower-cased unit.
 func normalize(qty float64, unit string) (amount float64, base string, ok bool) {
 	u := strings.ToLower(strings.TrimSpace(unit))
 	if info, found := units[u]; found {
@@ -33,9 +33,9 @@ func normalize(qty float64, unit string) (amount float64, base string, ok bool) 
 	return qty, u, false
 }
 
-// PackagesNeeded berechnet, wie viele Packungen für die Rezeptmenge nötig sind.
-// Sind die Einheiten nicht vergleichbar, wird der Vorschlag der KI (fallback)
-// verwendet, mindestens aber 1.
+// PackagesNeeded computes how many packages the recipe quantity requires. If
+// the units are not comparable, the AI's suggestion (fallback) is used, but
+// at least 1.
 func PackagesNeeded(ing model.Ingredient, packageAmount float64, packageUnit string, fallback int) int {
 	if fallback < 1 {
 		fallback = 1
@@ -55,7 +55,7 @@ func PackagesNeeded(ing model.Ingredient, packageAmount float64, packageUnit str
 	return n
 }
 
-// Enrich ergänzt Packungsanzahl und Kosten der Angebote eines Shops.
+// Enrich fills in package counts and costs for a shop's offers.
 func Enrich(sp *model.StorePrices, ingredients []model.Ingredient) {
 	byName := map[string]model.Ingredient{}
 	for _, in := range ingredients {
@@ -73,7 +73,7 @@ func Enrich(sp *model.StorePrices, ingredients []model.Ingredient) {
 	}
 }
 
-// Compare erstellt den Preisvergleich über alle Shops.
+// Compare builds the price comparison across all shops.
 func Compare(ingredients []model.Ingredient, results []model.StorePrices) model.Comparison {
 	cmp := model.Comparison{IngredientCount: len(ingredients)}
 	best := map[string]*model.Offer{}
@@ -82,7 +82,7 @@ func Compare(ingredients []model.Ingredient, results []model.StorePrices) model.
 		if sp.Error != "" {
 			continue
 		}
-		// Günstigstes Angebot je Zutat innerhalb dieses Shops.
+		// Cheapest offer per ingredient within this shop.
 		cheapest := map[string]*model.Offer{}
 		for i := range sp.Offers {
 			o := &sp.Offers[i]
@@ -111,7 +111,7 @@ func Compare(ingredients []model.Ingredient, results []model.StorePrices) model.
 		cmp.StoreTotals = append(cmp.StoreTotals, st)
 	}
 
-	// Sortierung: mehr gefundene Zutaten zuerst, dann günstiger.
+	// Sort: more ingredients found first, then cheaper.
 	sort.SliceStable(cmp.StoreTotals, func(i, j int) bool {
 		a, b := cmp.StoreTotals[i], cmp.StoreTotals[j]
 		if a.Found != b.Found {
