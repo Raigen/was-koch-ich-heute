@@ -58,8 +58,14 @@ export default function RecipeDetail({
   // What the running comparison was started with (the inputs may change while it runs).
   const runInput = useRef({ ingredients: toBuy, storeIds: stores.map((s) => s.id), postalCode });
 
+  // Ticks that existed when the current comparison was started. An explicit new
+  // comparison starts the shopping list from scratch; only ticks made while it ran
+  // (e.g. before "Fehlgeschlagene erneut versuchen") carry over.
+  const ticksAtStart = useRef(new Set(saved?.checked ?? []));
+
   function startComparison() {
     runInput.current = { ingredients: toBuy, storeIds: stores.map((s) => s.id), postalCode };
+    ticksAtStart.current = new Set(saved?.checked ?? []);
     setRun((r) => r + 1);
   }
 
@@ -70,14 +76,14 @@ export default function RecipeDetail({
     const complete = results.every((r) => !r.error) && comparison.mix.some((m) => m.offer);
     setIncomplete(!complete);
     if (!complete) return;
-    // Keep ticks for items that are still bought in the same shop.
+    // Keep only ticks made during this run, for items still bought in the same shop.
     const inMix = new Set(comparison.mix.flatMap((m) => (m.offer ? [shoppingItemKey(m.offer.storeId, m.offer.ingredient)] : [])));
     const check: SavedPriceCheck = {
       comparedAt: new Date().toISOString(),
       ...runInput.current,
       results,
       comparison,
-      checked: (saved?.checked ?? []).filter((k) => inMix.has(k)),
+      checked: (saved?.checked ?? []).filter((k) => !ticksAtStart.current.has(k) && inMix.has(k)),
     };
     setLastCheck(check);
     if (favorite) onUpdate(favorite.id, { priceCheck: check });
@@ -168,7 +174,11 @@ export default function RecipeDetail({
           key={saved.comparedAt}
           check={saved}
           allStores={allStores}
-          onCheckedChange={(checked) => onUpdate(favorite.id, { priceCheck: { ...saved, checked } })}
+          onCheckedChange={(checked) => {
+            // An item unticked during a run counts as new when it is ticked again.
+            for (const k of ticksAtStart.current) if (!checked.includes(k)) ticksAtStart.current.delete(k);
+            onUpdate(favorite.id, { priceCheck: { ...saved, checked } });
+          }}
         />
       )}
 

@@ -7,19 +7,21 @@ interface Props {
 
 /**
  * Star toggle that adds a recipe to the Merkliste or removes it. The accessible name
- * is fixed per recipe; aria-pressed carries the state.
+ * starts with the visible label (WCAG 2.5.3 "Label in Name") and adds the recipe title.
+ * The label itself says the state, so there is no aria-pressed (it would announce the
+ * state twice).
  */
 export default function FavoriteButton({ title, saved, onClick }: Props) {
+  const label = saved ? "Gemerkt" : "Merken";
   return (
     <button
       type="button"
       className={`btn-fav ${saved ? "on" : ""}`}
-      aria-label={`${title} merken`}
-      aria-pressed={saved}
+      aria-label={`${label}: ${title}`}
       title={saved ? "Von der Merkliste entfernen" : "Auf die Merkliste setzen"}
       onClick={onClick}
     >
-      <span aria-hidden="true">{saved ? "★" : "☆"}</span> {saved ? "Gemerkt" : "Merken"}
+      <span aria-hidden="true">{saved ? "★" : "☆"}</span> {label}
     </button>
   );
 }
