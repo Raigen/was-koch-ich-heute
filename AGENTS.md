@@ -15,6 +15,8 @@ ingredients in German supermarket web shops (REWE, EDEKA, ALDI, Lidl, PENNY, Kau
 - Docker: `docker compose up -d --build` (the build uses `network: host`; needed on WSL)
 - Backend tests and the frontend type check must pass before every commit.
 - Run `gofmt` on changed Go files.
+- CI (`.github/workflows/ci.yml`) runs the same checks plus a Docker build and smoke test on every
+  pull request; keep it green.
 
 ## Language
 - Everything in the repository is English: code, comments, docs, tests, log messages, commit
