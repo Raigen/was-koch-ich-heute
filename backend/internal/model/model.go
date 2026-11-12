@@ -125,12 +125,38 @@ type Usage struct {
 	CacheWriteTokens int64 `json:"cacheWriteTokens"`
 	WebSearches      int   `json:"webSearches"`
 	WebFetches       int   `json:"webFetches"`
-	// CostEUR is the estimate from the configured price table.
+	// CostEUR is the estimate from the configured price table. If Incomplete
+	// is set, it is a lower bound.
 	CostEUR float64 `json:"costEur"`
-	// CostKnown is false if the price table has no entry for the model.
+	// CostKnown is false if no cost can be given at all: the price table has
+	// no entry for a model, or the provider reported no usage (e.g. the
+	// research timed out before the first response arrived).
 	CostKnown bool `json:"costKnown"`
+	// Incomplete marks usage that misses some API calls, e.g. a request cut
+	// off by a timeout, or a total with parts of unknown cost.
+	Incomplete bool `json:"incomplete,omitempty"`
 	// Cached marks results served from the backend cache (no new AI cost).
 	Cached bool `json:"cached"`
+
+	// Calls holds the token usage per model sampling, so that each one can be
+	// priced with its own model and prompt length (see pricing.PriceTable).
+	// Internal only; the summed counts above are what clients see.
+	Calls []ModelCall `json:"-"`
+}
+
+// ModelCall is the token usage of one model sampling: one API response, or one
+// iteration of a server-side tool loop or refusal fallback.
+type ModelCall struct {
+	Model            string
+	InputTokens      int64
+	OutputTokens     int64
+	CacheReadTokens  int64
+	CacheWriteTokens int64
+}
+
+// PromptTokens returns the prompt length of the call (all input tokens).
+func (c ModelCall) PromptTokens() int64 {
+	return c.InputTokens + c.CacheReadTokens + c.CacheWriteTokens
 }
 
 // TotalTokens returns the sum of all token counts.
@@ -154,22 +180,32 @@ func (u *Usage) Add(o Usage) {
 	u.CacheWriteTokens += o.CacheWriteTokens
 	u.WebSearches += o.WebSearches
 	u.WebFetches += o.WebFetches
+	u.Calls = append(u.Calls, o.Calls...)
 }
 
-// SumUsage adds up several usages including their cost. The cost of the sum
-// is known only if it is known for every part, and the sum counts as cached
-// only if every part came from the cache.
+// SumUsage adds up several already priced usages. The cost of the sum is the
+// sum of the known costs; it is known if at least one part has a known cost,
+// and incomplete if any part is incomplete or has an unknown cost. The sum
+// counts as cached only if every part came from the cache.
 func SumUsage(parts ...Usage) Usage {
 	var total Usage
 	if len(parts) == 0 {
 		return total
 	}
-	total.CostKnown, total.Cached = true, true
+	total.Cached = true
 	for _, p := range parts {
 		total.Add(p)
-		total.CostEUR += p.CostEUR
-		total.CostKnown = total.CostKnown && p.CostKnown
 		total.Cached = total.Cached && p.Cached
+		if p.CostKnown {
+			total.CostEUR += p.CostEUR
+			total.CostKnown = true
+		}
+		total.Incomplete = total.Incomplete || p.Incomplete || !p.CostKnown
 	}
+	if !total.CostKnown {
+		// Nothing to sum: the total is simply unknown, not incomplete.
+		total.Incomplete = false
+	}
+	total.Calls = nil
 	return total
 }

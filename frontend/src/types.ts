@@ -94,9 +94,12 @@ export interface Usage {
   cacheWriteTokens: number;
   webSearches: number;
   webFetches: number;
+  /** Estimated cost; a lower bound if `incomplete` is set. */
   costEur: number;
-  /** False if the backend price table has no entry for the model. */
+  /** False if no cost can be given: no price for the model, or no usage reported (e.g. timeout). */
   costKnown: boolean;
+  /** Some API calls are missing (e.g. cut off by a timeout), so the cost is a lower bound. */
+  incomplete?: boolean;
   /** Served from the backend cache: no new AI cost. */
   cached: boolean;
 }

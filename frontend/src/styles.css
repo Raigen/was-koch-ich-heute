@@ -122,8 +122,12 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .progress-item.failed { color: var(--error-text); background: var(--error-bg); }
 .progress-item .usage-line { margin: 0; }
 
-/* AI usage and estimated cost of a search; details in the tooltip. */
-.usage-line { margin: 8px 0 14px; font-size: 0.82rem; color: var(--muted); cursor: help; font-variant-numeric: tabular-nums; }
+/* AI usage and estimated cost of a search; details in a disclosure. */
+.usage-line { margin: 8px 0 14px; font-size: 0.82rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+.usage-line summary { cursor: pointer; width: fit-content; }
+.usage-line summary:focus-visible { outline: 2px solid var(--muted); outline-offset: 2px; border-radius: 4px; }
+.usage-details { margin: 6px 0 0; padding-left: 20px; line-height: 1.5; }
+.progress-item .usage-line[title] { cursor: help; }
 
 .summary { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px; }
 .summary-card { background: var(--surface); border: 1px solid var(--border); border-left: 4px solid var(--store, var(--border)); border-radius: var(--radius); padding: 12px 14px; }

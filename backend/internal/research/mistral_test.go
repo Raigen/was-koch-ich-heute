@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/raigen/was-koch-ich-heute/backend/internal/model"
@@ -52,7 +53,7 @@ func TestMistralFindPrices(t *testing.T) {
 	// prompt_tokens includes the cached tokens; connector tokens count as input.
 	want := model.Usage{Provider: "mistral", Model: "mistral-medium-latest", Requests: 1,
 		InputTokens: 1200 - 1024 + 7112, OutputTokens: 300, CacheReadTokens: 1024, WebSearches: 3}
-	if usage != want {
+	if !reflect.DeepEqual(usage, want) {
 		t.Errorf("usage = %+v, want %+v", usage, want)
 	}
 	if calls != 2 {

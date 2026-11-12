@@ -108,14 +108,20 @@ Results are cached in memory (recipes 24 h, prices 6 h) to save API costs.
 ### API usage and cost
 
 Every recipe search and price comparison shows the AI usage it caused, e.g.
-"≈ 0,12 € · 18.400 Tokens · 6 Web-Suchen"; the tooltip has the details (API calls, input, output and
+"≈ 0,12 € · 18.400 Tokens · 6 Web-Suchen"; a click on it shows the details (API calls, input, output and
 cache tokens, web searches and fetches). The price comparison shows the cost per shop and in total.
 
 - The providers report the usage; the backend sums it over all API calls of a research, including
-  resumed `pause_turn` responses, and computes the cost (`internal/pricing/cost.go`).
-- `/api/recipes/search` returns `usage`, `store` events in `/api/prices/compare` carry the shop's `usage`,
-  and the `summary` event's `comparison.usage` holds the total.
+  resumed `pause_turn` responses, and computes the cost (`internal/pricing/cost.go`). Tokens are priced
+  per model call, so a refusal fallback to another model and per-request prices (Claude Haiku 5.5
+  above 100,000 prompt tokens) are taken into account.
+- `/api/recipes/search` returns `usage` (also with an error, because a failed research can be billed),
+  `store` events in `/api/prices/compare` carry the shop's `usage`, and the `summary` event's
+  `comparison.usage` holds the total.
 - Cache hits cost nothing and are marked `"cached": true`; demo mode reports zero usage.
+- A research cut off by a timeout cannot report the usage of its last request: its cost is marked
+  `"incomplete": true` (shown as "mind. …"), or unknown (`"costKnown": false`, "Kosten unbekannt") if no
+  response arrived at all. The total is then incomplete as well.
 - The cost is an estimate from a price table (USD list prices, converted to euros). The built-in table
   covers the default models; `PRICE_TABLE` overrides or extends it without code changes:
 
@@ -128,8 +134,11 @@ cache tokens, web searches and fetches). The price comparison shows the cost per
   }
   ```
 
-  Token prices are per million tokens, tool prices per 1,000 calls. A model ID also matches dated
-  variants (`claude-opus-5-5-…`). Models without a price show "Kosten unbekannt".
+  Token prices are per million tokens, tool prices per 1,000 calls. Optional prompt-length pricing:
+  `"longContext": {"abovePromptTokens": 100000, "input": 0.5, "output": 2.5, "cacheRead": 0.05, "cacheWrite": 0.625}`.
+  A model ID also matches its dated snapshots (`claude-opus-5-5-20261101`, `…@20261101`), but not other
+  versions; models without a price show "Kosten unbekannt". Unknown keys and negative prices are
+  rejected at startup.
 
 ### Design decisions
 

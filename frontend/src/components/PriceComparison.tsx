@@ -118,8 +118,11 @@ export default function PriceComparison({ ingredients, stores, allStores, postal
               {state === "pending" && <span className="spinner small" />}
               {state === "done" && "✓"}
               {state === "failed" && (r?.timedOut ? "⏱" : "✕")} {s.name}
-              {r?.cached && <em className="muted small"> (Cache)</em>}
-              {r?.usage && !r.cached && <UsageLine usage={r.usage} compact className="small" />}
+              {r?.usage ? (
+                <UsageLine usage={r.usage} compact className="small" />
+              ) : (
+                r?.cached && <em className="muted small"> (Cache)</em>
+              )}
             </span>
           );
         })}
@@ -130,7 +133,12 @@ export default function PriceComparison({ ingredients, stores, allStores, postal
         )}
       </div>
 
-      {comparison && <UsageLine usage={comparison.usage} />}
+      {comparison && (
+        <UsageLine
+          usage={comparison.usage}
+          breakdown={stores.map((s) => ({ label: s.name, usage: results[s.id]?.usage }))}
+        />
+      )}
 
       {error && <div className="error">{error}</div>}
 

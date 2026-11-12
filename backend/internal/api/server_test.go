@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -158,6 +159,10 @@ func TestPriceCompareTimeoutHeartbeatAndRetry(t *testing.T) {
 	if !stores["edeka"].TimedOut || !strings.Contains(stores["edeka"].Error, "Zeitüberschreitung") {
 		t.Errorf("edeka should report a timeout: %+v", stores["edeka"])
 	}
+	// No usage reported before the timeout: the cost is unknown, not 0 €.
+	if u := stores["edeka"].Usage; u == nil || u.CostKnown {
+		t.Errorf("timed-out shop must have an unknown cost: %+v", u)
+	}
 	if stores["rewe"].Error != "" || len(stores["rewe"].Offers) == 0 {
 		t.Errorf("rewe should still return results: %+v", stores["rewe"])
 	}
@@ -172,5 +177,78 @@ func TestPriceCompareTimeoutHeartbeatAndRetry(t *testing.T) {
 	}
 	if u := stores["rewe"].Usage; u == nil || !u.Cached || u.CostEUR != 0 {
 		t.Errorf("retry: cached shop should report free usage: %+v", u)
+	}
+}
+
+// billedResearcher fails recipe searches after a billed API call and lets
+// edeka time out after a billed API call.
+type billedResearcher struct{ research.Demo }
+
+func (b *billedResearcher) SearchRecipes(ctx context.Context, q model.RecipeQuery) ([]model.Recipe, model.Usage, error) {
+	u := model.Usage{Provider: "claude", Model: "claude-opus-5-5", Requests: 1, InputTokens: 1000, OutputTokens: 100}
+	return nil, u, errors.New("die Anfrage wurde vom Modell abgelehnt")
+}
+
+func (b *billedResearcher) FindPrices(ctx context.Context, st model.Store, ings []model.Ingredient, plz string) (model.StorePrices, model.Usage, error) {
+	u := model.Usage{Provider: "claude", Model: "claude-opus-5-5", Requests: 1, InputTokens: 1000, WebSearches: 2}
+	if st.ID == "edeka" {
+		<-ctx.Done()
+		return model.StorePrices{}, u, ctx.Err()
+	}
+	return model.StorePrices{StoreID: st.ID}, u, nil
+}
+
+func TestUsageOnFailure(t *testing.T) {
+	ts := httptest.NewServer(New(&billedResearcher{}, Options{StoreTimeout: 200 * time.Millisecond}).Handler())
+	defer ts.Close()
+
+	// A failed recipe search still returns its (billed) usage.
+	resp, err := http.Post(ts.URL+"/api/recipes/search", "application/json", strings.NewReader(`{"query":"dal"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	var failed struct {
+		Error string
+		Usage *model.Usage
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&failed); err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusBadGateway || failed.Error == "" || failed.Usage == nil || !failed.Usage.CostKnown || failed.Usage.CostEUR <= 0 {
+		t.Errorf("failed search: status %d, %+v", resp.StatusCode, failed)
+	}
+
+	// A shop cut off by the timeout after a billed call has an incomplete
+	// cost (a lower bound), and so has the total.
+	body := `{"ingredients":[{"name":"Reis","quantity":250,"unit":"g"}],"storeIds":["rewe","edeka"]}`
+	resp2, err := http.Post(ts.URL+"/api/prices/compare", "application/json", strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp2.Body.Close()
+	stores := map[string]*model.Usage{}
+	var total *model.Usage
+	sc := bufio.NewScanner(resp2.Body)
+	for sc.Scan() {
+		var ev priceEvent
+		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
+			t.Fatal(err)
+		}
+		switch ev.Type {
+		case "store":
+			stores[ev.Store.StoreID] = ev.Store.Usage
+		case "summary":
+			total = ev.Comparison.Usage
+		}
+	}
+	if u := stores["rewe"]; u == nil || u.Incomplete || !u.CostKnown {
+		t.Errorf("rewe usage = %+v", u)
+	}
+	if u := stores["edeka"]; u == nil || !u.Incomplete || !u.CostKnown || u.CostEUR <= 0 {
+		t.Errorf("timed-out edeka usage should be an incomplete lower bound: %+v", u)
+	}
+	if total == nil || !total.Incomplete || stores["rewe"] == nil || total.CostEUR <= stores["rewe"].CostEUR {
+		t.Errorf("total = %+v", total)
 	}
 }

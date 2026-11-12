@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -72,8 +73,12 @@ func TestClaudeFindPrices(t *testing.T) {
 	}
 	// The usage is summed over the paused and the final response.
 	want := model.Usage{Provider: "claude", Model: "claude-opus-5-5", Requests: 2, InputTokens: 8000, OutputTokens: 600,
-		CacheReadTokens: 1000, CacheWriteTokens: 500, WebSearches: 3, WebFetches: 1}
-	if usage != want {
+		CacheReadTokens: 1000, CacheWriteTokens: 500, WebSearches: 3, WebFetches: 1,
+		Calls: []model.ModelCall{
+			{Model: "claude-opus-5-5", InputTokens: 3000, OutputTokens: 200, CacheWriteTokens: 500},
+			{Model: "claude-opus-5-5", InputTokens: 5000, OutputTokens: 400, CacheReadTokens: 1000},
+		}}
+	if !reflect.DeepEqual(usage, want) {
 		t.Errorf("usage = %+v, want %+v", usage, want)
 	}
 	if msgs := bodies[1]["messages"].([]any); len(msgs) != 2 {
@@ -114,6 +119,35 @@ func TestClaudeUsageOnRefusal(t *testing.T) {
 	}
 	if usage.Requests != 1 || usage.InputTokens != 700 || usage.WebSearches != 1 {
 		t.Errorf("usage = %+v", usage)
+	}
+}
+
+// TestClaudeFallbackIterations checks that a response served by a refusal
+// fallback is split into per-model calls via usage.iterations, and that
+// iterations which do not add up are ignored.
+func TestClaudeFallbackIterations(t *testing.T) {
+	var resp anthropic.BetaMessage
+	raw := `{"id":"m","type":"message","role":"assistant","model":"claude-opus-5-5","stop_reason":"end_turn","content":[],
+		"usage":{"input_tokens":300,"output_tokens":30,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,
+		"iterations":[
+			{"type":"message","model":"claude-opus-5-5","input_tokens":100,"output_tokens":10},
+			{"type":"compaction","input_tokens":999,"output_tokens":99},
+			{"type":"fallback_message","model":"claude-opus-5","input_tokens":200,"output_tokens":20}]}}`
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		t.Fatal(err)
+	}
+	want := []model.ModelCall{
+		{Model: "claude-opus-5-5", InputTokens: 100, OutputTokens: 10},
+		{Model: "claude-opus-5", InputTokens: 200, OutputTokens: 20},
+	}
+	if got := claudeCalls(&resp); !reflect.DeepEqual(got, want) {
+		t.Errorf("calls = %+v, want %+v", got, want)
+	}
+
+	resp.Usage.InputTokens = 301 // iterations no longer add up: one call for the whole response
+	want = []model.ModelCall{{Model: "claude-opus-5-5", InputTokens: 301, OutputTokens: 30}}
+	if got := claudeCalls(&resp); !reflect.DeepEqual(got, want) {
+		t.Errorf("calls = %+v, want %+v", got, want)
 	}
 }
 

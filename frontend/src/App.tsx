@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { getConfig, getStores, searchRecipes } from "./api";
+import { ApiError, getConfig, getStores, searchRecipes } from "./api";
 import { storageGet, storageSet } from "./format";
 import type { AppConfig, Recipe, RecipeQuery, Store, Usage } from "./types";
 import SearchForm from "./components/SearchForm";
@@ -24,6 +24,8 @@ export default function App() {
   const [selected, setSelected] = useState<Recipe | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Usage of a failed search: it can still have been billed.
+  const [errorUsage, setErrorUsage] = useState<Usage | undefined>(undefined);
   const abortRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
@@ -43,13 +45,17 @@ export default function App() {
     storageSet("query", { servings: q.servings, maxBudget: q.maxBudget, diet: q.diet });
     setLoading(true);
     setError(null);
+    setErrorUsage(undefined);
     setSelected(null);
     try {
       const result = await searchRecipes(q, ctrl.signal);
       setRecipes(result.recipes);
       setUsage(result.usage);
     } catch (e) {
-      if ((e as Error).name !== "AbortError") setError((e as Error).message);
+      if ((e as Error).name !== "AbortError") {
+        setError((e as Error).message);
+        if (e instanceof ApiError) setErrorUsage(e.usage);
+      }
     } finally {
       if (abortRef.current === ctrl) setLoading(false);
     }
@@ -94,6 +100,7 @@ export default function App() {
       </section>
 
       {error && <div className="error">{error}</div>}
+      {error && <UsageLine usage={errorUsage} />}
 
       {loading && (
         <div className="loading">

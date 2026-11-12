@@ -1,8 +1,11 @@
 package pricing
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io"
 	"math"
 	"os"
 	"strings"
@@ -10,49 +13,77 @@ import (
 	"github.com/raigen/was-koch-ich-heute/backend/internal/model"
 )
 
+// TokenPrices are token prices in US dollars per million tokens.
+type TokenPrices struct {
+	Input      float64 `json:"input"`
+	Output     float64 `json:"output"`
+	CacheRead  float64 `json:"cacheRead"`
+	CacheWrite float64 `json:"cacheWrite"`
+}
+
+// LongContextPrice holds the higher token prices that apply to a request
+// whose prompt (all input tokens including cache reads and writes) exceeds
+// AbovePromptTokens.
+type LongContextPrice struct {
+	AbovePromptTokens int64 `json:"abovePromptTokens"`
+	TokenPrices
+}
+
 // ModelPrice holds the list prices of one model in US dollars, as published by
-// the providers: tokens per million, web searches per thousand.
+// the providers: tokens per million, tool calls per thousand.
 type ModelPrice struct {
-	Input            float64 `json:"input"`
-	Output           float64 `json:"output"`
-	CacheRead        float64 `json:"cacheRead"`
-	CacheWrite       float64 `json:"cacheWrite"`
-	WebSearchPer1000 float64 `json:"webSearchPer1000"`
-	WebFetchPer1000  float64 `json:"webFetchPer1000"`
+	TokenPrices
+	WebSearchPer1000 float64           `json:"webSearchPer1000"`
+	WebFetchPer1000  float64           `json:"webFetchPer1000"`
+	LongContext      *LongContextPrice `json:"longContext,omitempty"`
+}
+
+// tokens returns the token prices for a request with the given prompt length.
+func (p ModelPrice) tokens(promptTokens int64) TokenPrices {
+	if p.LongContext != nil && promptTokens > p.LongContext.AbovePromptTokens {
+		return p.LongContext.TokenPrices
+	}
+	return p.TokenPrices
 }
 
 // PriceTable converts AI usage into an estimated cost in euros.
 type PriceTable struct {
 	// EURPerUSD is the exchange rate used to convert the dollar prices.
 	EURPerUSD float64 `json:"eurPerUsd"`
-	// Models maps a model ID (or an ID prefix, see Lookup) to its prices.
+	// Models maps a model ID to its prices (see Lookup).
 	Models map[string]ModelPrice `json:"models"`
+}
+
+func price(in, out, cacheRead, cacheWrite, webSearchPer1000 float64) ModelPrice {
+	return ModelPrice{TokenPrices: TokenPrices{in, out, cacheRead, cacheWrite}, WebSearchPer1000: webSearchPer1000}
 }
 
 // DefaultPriceTable returns the built-in prices (USD list prices, checked on
 // 2026-11-12). They can be overridden or extended with PRICE_TABLE.
 func DefaultPriceTable() PriceTable {
+	haiku := price(0.10, 0.50, 0.01, 0.125, 10)
+	haiku.LongContext = &LongContextPrice{AbovePromptTokens: 100_000, TokenPrices: TokenPrices{0.50, 2.50, 0.05, 0.625}}
 	return PriceTable{
+		// Static approximation, not a live rate.
 		EURPerUSD: 0.86,
 		Models: map[string]ModelPrice{
 			// Anthropic: platform.claude.com/docs/en/about-claude/pricing.
 			// Web search costs $10 per 1,000 searches, web fetch is free.
 			// Cache writes use the 5-minute price.
-			"claude-fable-5-2":  {Input: 8, Output: 40, CacheRead: 0.20, CacheWrite: 10, WebSearchPer1000: 10},
-			"claude-opus-5-5":   {Input: 4, Output: 20, CacheRead: 0.20, CacheWrite: 5, WebSearchPer1000: 10},
-			"claude-opus-5":     {Input: 5, Output: 25, CacheRead: 0.50, CacheWrite: 6.25, WebSearchPer1000: 10},
-			"claude-sonnet-5-5": {Input: 2, Output: 10, CacheRead: 0.10, CacheWrite: 2.50, WebSearchPer1000: 10},
-			"claude-sonnet-5":   {Input: 2, Output: 10, CacheRead: 0.20, CacheWrite: 2.50, WebSearchPer1000: 10},
-			// Prices for prompts up to 100,000 tokens.
-			"claude-haiku-5-5": {Input: 0.10, Output: 0.50, CacheRead: 0.01, CacheWrite: 0.125, WebSearchPer1000: 10},
+			"claude-fable-5-2":  price(8, 40, 0.20, 10, 10),
+			"claude-opus-5-5":   price(4, 20, 0.20, 5, 10),
+			"claude-opus-5":     price(5, 25, 0.50, 6.25, 10),
+			"claude-sonnet-5-5": price(2, 10, 0.10, 2.50, 10),
+			"claude-sonnet-5":   price(2, 10, 0.20, 2.50, 10),
+			// Haiku 5.5 is priced per request by prompt length.
+			"claude-haiku-5-5": haiku,
 			// Mistral: docs.mistral.ai/inference/pricing and the model pages.
 			// Cached input costs 10 % of the input price. The web search price
-			// is not listed in the docs; $30 per 1,000 calls is the price on
-			// mistral.ai/pricing at the time of writing (unverified).
-			"mistral-medium-latest": {Input: 1.5, Output: 7.5, CacheRead: 0.15, WebSearchPer1000: 30},
-			"mistral-medium-3-5":    {Input: 1.5, Output: 7.5, CacheRead: 0.15, WebSearchPer1000: 30},
-			"mistral-large-4":       {Input: 0.7, Output: 2.1, CacheRead: 0.07, WebSearchPer1000: 30},
-			"mistral-small-2603":    {Input: 0.15, Output: 0.6, CacheRead: 0.015, WebSearchPer1000: 30},
+			// is not in the docs; $30 per 1,000 calls is unverified.
+			"mistral-medium-latest": price(1.5, 7.5, 0.15, 0, 30),
+			"mistral-medium-3-5":    price(1.5, 7.5, 0.15, 0, 30),
+			"mistral-large-4":       price(0.7, 2.1, 0.07, 0, 30),
+			"mistral-small-2603":    price(0.15, 0.6, 0.015, 0, 30),
 		},
 	}
 }
@@ -60,7 +91,9 @@ func DefaultPriceTable() PriceTable {
 // LoadPriceTable returns the default price table, overridden by spec. spec
 // is either inline JSON (starting with "{") or the path to a JSON file in the
 // same format as PriceTable. Model entries in spec replace or extend the
-// defaults; eurPerUsd replaces the default rate if set.
+// defaults; eurPerUsd replaces the default rate if set. Unknown keys and
+// negative prices are rejected, so that a typo does not silently price a
+// component at zero.
 func LoadPriceTable(spec string) (PriceTable, error) {
 	t := DefaultPriceTable()
 	spec = strings.TrimSpace(spec)
@@ -74,25 +107,55 @@ func LoadPriceTable(spec string) (PriceTable, error) {
 			return t, fmt.Errorf("read price table: %w", err)
 		}
 	}
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	dec.DisallowUnknownFields()
 	var custom PriceTable
-	if err := json.Unmarshal(raw, &custom); err != nil {
+	if err := dec.Decode(&custom); err != nil {
 		return t, fmt.Errorf("parse price table: %w", err)
 	}
-	if custom.EURPerUSD < 0 {
-		return t, fmt.Errorf("price table: eurPerUsd must not be negative")
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return t, errors.New("parse price table: unexpected data after the JSON object")
+	}
+	if custom.EURPerUSD < 0 || math.IsNaN(custom.EURPerUSD) {
+		return t, errors.New("price table: eurPerUsd must not be negative")
 	}
 	if custom.EURPerUSD > 0 {
 		t.EURPerUSD = custom.EURPerUSD
 	}
 	for id, p := range custom.Models {
-		t.Models[strings.ToLower(strings.TrimSpace(id))] = p
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id == "" {
+			return t, errors.New("price table: empty model ID")
+		}
+		if err := p.validate(); err != nil {
+			return t, fmt.Errorf("price table: model %q: %w", id, err)
+		}
+		t.Models[id] = p
 	}
 	return t, nil
 }
 
-// Lookup finds the prices for a model. An exact match wins; otherwise the
-// longest entry that is a prefix of the model ID followed by "-" or "@"
-// (e.g. dated snapshots such as "claude-opus-5-5-20261101").
+func (p ModelPrice) validate() error {
+	values := []float64{p.Input, p.Output, p.CacheRead, p.CacheWrite, p.WebSearchPer1000, p.WebFetchPer1000}
+	if lc := p.LongContext; lc != nil {
+		if lc.AbovePromptTokens <= 0 {
+			return errors.New("longContext.abovePromptTokens must be positive")
+		}
+		values = append(values, lc.Input, lc.Output, lc.CacheRead, lc.CacheWrite)
+	}
+	for _, v := range values {
+		if v < 0 || math.IsNaN(v) || math.IsInf(v, 0) {
+			return errors.New("prices must not be negative")
+		}
+	}
+	return nil
+}
+
+// Lookup finds the prices for a model: an exact match, or a dated snapshot of
+// a listed model ("claude-opus-5-5-20261101", "claude-opus-5-5@20261101").
+// Other IDs, e.g. a newer model version that merely shares a prefix with a
+// listed one, are not found, so their cost is shown as unknown instead of
+// being priced with another model's row.
 func (t PriceTable) Lookup(modelID string) (ModelPrice, bool) {
 	id := strings.ToLower(strings.TrimSpace(modelID))
 	if id == "" {
@@ -101,32 +164,67 @@ func (t PriceTable) Lookup(modelID string) (ModelPrice, bool) {
 	if p, ok := t.Models[id]; ok {
 		return p, true
 	}
-	best, found := "", false
-	for k := range t.Models {
-		if len(k) > len(best) && len(id) > len(k) && strings.HasPrefix(id, k) && (id[len(k)] == '-' || id[len(k)] == '@') {
-			best, found = k, true
-		}
+	if i := strings.IndexByte(id, '@'); i > 0 {
+		p, ok := t.Models[id[:i]]
+		return p, ok
 	}
-	return t.Models[best], found
+	if len(id) > 9 && id[len(id)-9] == '-' && isDigits(id[len(id)-8:]) {
+		p, ok := t.Models[id[:len(id)-9]]
+		return p, ok
+	}
+	return ModelPrice{}, false
 }
 
-// Apply sets the estimated cost of u. Cache hits and usage without any
-// tokens or tool calls cost nothing.
+func isDigits(s string) bool {
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return s != ""
+}
+
+// Apply sets the estimated cost of u.
+//   - Cache hits and the demo provider cost nothing.
+//   - Without any reported usage (e.g. a timeout before the first response),
+//     the cost is unknown: money may have been spent that nobody reported.
+//   - Tokens are priced per model call (u.Calls) with the call's own model and
+//     prompt length; without calls, the summed tokens are priced with u.Model.
+//   - Web searches and fetches are priced with u.Model.
+//
+// If any model has no price, the cost is unknown.
 func (t PriceTable) Apply(u *model.Usage) {
-	if u.Cached || (u.TotalTokens() == 0 && u.WebSearches == 0 && u.WebFetches == 0) {
-		u.CostEUR, u.CostKnown = 0, true
+	u.CostEUR = 0
+	if u.Cached || u.Provider == "demo" {
+		u.CostKnown = true
 		return
 	}
-	p, ok := t.Lookup(u.Model)
-	if !ok {
-		u.CostEUR, u.CostKnown = 0, false
+	if u.Requests == 0 && u.TotalTokens() == 0 && u.WebSearches == 0 && u.WebFetches == 0 {
+		u.CostKnown = false
 		return
 	}
-	usd := (float64(u.InputTokens)*p.Input +
-		float64(u.OutputTokens)*p.Output +
-		float64(u.CacheReadTokens)*p.CacheRead +
-		float64(u.CacheWriteTokens)*p.CacheWrite) / 1e6
-	usd += (float64(u.WebSearches)*p.WebSearchPer1000 + float64(u.WebFetches)*p.WebFetchPer1000) / 1000
+	main, ok := t.Lookup(u.Model)
+	if !ok && (u.WebSearches > 0 || u.WebFetches > 0 || len(u.Calls) == 0) {
+		u.CostKnown = false
+		return
+	}
+	calls := u.Calls
+	if len(calls) == 0 {
+		calls = []model.ModelCall{{Model: u.Model, InputTokens: u.InputTokens, OutputTokens: u.OutputTokens,
+			CacheReadTokens: u.CacheReadTokens, CacheWriteTokens: u.CacheWriteTokens}}
+	}
+	var usd float64
+	for _, c := range calls {
+		p, ok := t.Lookup(c.Model)
+		if !ok {
+			u.CostKnown = false
+			return
+		}
+		tp := p.tokens(c.PromptTokens())
+		usd += (float64(c.InputTokens)*tp.Input + float64(c.OutputTokens)*tp.Output +
+			float64(c.CacheReadTokens)*tp.CacheRead + float64(c.CacheWriteTokens)*tp.CacheWrite) / 1e6
+	}
+	usd += (float64(u.WebSearches)*main.WebSearchPer1000 + float64(u.WebFetches)*main.WebFetchPer1000) / 1000
 	u.CostEUR = math.Round(usd*t.EURPerUSD*1e4) / 1e4
 	u.CostKnown = true
 }

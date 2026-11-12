@@ -99,15 +99,62 @@ func addClaudeUsage(u *model.Usage, resp *anthropic.BetaMessage) {
 	if resp.Model != "" {
 		u.Model = string(resp.Model)
 	}
+	ru := resp.Usage
 	u.Add(model.Usage{
 		Requests:         1,
-		InputTokens:      resp.Usage.InputTokens,
-		OutputTokens:     resp.Usage.OutputTokens,
-		CacheReadTokens:  resp.Usage.CacheReadInputTokens,
-		CacheWriteTokens: resp.Usage.CacheCreationInputTokens,
-		WebSearches:      int(resp.Usage.ServerToolUse.WebSearchRequests),
-		WebFetches:       int(resp.Usage.ServerToolUse.WebFetchRequests),
+		InputTokens:      ru.InputTokens,
+		OutputTokens:     ru.OutputTokens,
+		CacheReadTokens:  ru.CacheReadInputTokens,
+		CacheWriteTokens: ru.CacheCreationInputTokens,
+		WebSearches:      int(ru.ServerToolUse.WebSearchRequests),
+		WebFetches:       int(ru.ServerToolUse.WebFetchRequests),
+		Calls:            claudeCalls(resp),
 	})
+}
+
+// claudeCalls splits a response's token usage into its sampling iterations
+// (usage.iterations), so that each one is priced with the model that ran it,
+// e.g. after a server-side refusal fallback. If the iterations do not add up
+// to the top-level usage (or are missing), the whole response is one call
+// with the response's model.
+func claudeCalls(resp *anthropic.BetaMessage) []model.ModelCall {
+	ru := resp.Usage
+	whole := []model.ModelCall{{
+		Model:            string(resp.Model),
+		InputTokens:      ru.InputTokens,
+		OutputTokens:     ru.OutputTokens,
+		CacheReadTokens:  ru.CacheReadInputTokens,
+		CacheWriteTokens: ru.CacheCreationInputTokens,
+	}}
+	var calls []model.ModelCall
+	var sum model.ModelCall
+	for _, it := range ru.Iterations {
+		// Compaction entries are not part of the top-level usage.
+		if it.Type != "message" && it.Type != "fallback_message" {
+			continue
+		}
+		c := model.ModelCall{
+			Model:            string(it.Model),
+			InputTokens:      it.InputTokens,
+			OutputTokens:     it.OutputTokens,
+			CacheReadTokens:  it.CacheReadInputTokens,
+			CacheWriteTokens: it.CacheCreationInputTokens,
+		}
+		if c.Model == "" {
+			c.Model = string(resp.Model)
+		}
+		calls = append(calls, c)
+		sum.InputTokens += c.InputTokens
+		sum.OutputTokens += c.OutputTokens
+		sum.CacheReadTokens += c.CacheReadTokens
+		sum.CacheWriteTokens += c.CacheWriteTokens
+	}
+	w := whole[0]
+	if len(calls) == 0 || sum.InputTokens != w.InputTokens || sum.OutputTokens != w.OutputTokens ||
+		sum.CacheReadTokens != w.CacheReadTokens || sum.CacheWriteTokens != w.CacheWriteTokens {
+		return whole
+	}
+	return calls
 }
 
 // run sends a request with server-side tools, resumes paused responses and

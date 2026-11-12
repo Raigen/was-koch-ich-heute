@@ -141,11 +141,13 @@ func (s *Server) handleRecipeSearch(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), s.callTimeout)
 	defer cancel()
 	recipes, usage, err := s.researcher.SearchRecipes(ctx, q)
-	s.prices.Apply(&usage)
+	s.priceUsage(ctx, &usage, err)
 	logUsage("recipe search", "", usage)
 	if err != nil {
 		slog.Error("recipe search failed", "err", err)
-		writeError(w, http.StatusBadGateway, err.Error())
+		// A failed research can still have been billed, so the usage is
+		// returned with the error, like for failed shops in the price stream.
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "usage": usage})
 		return
 	}
 	for i := range recipes {
@@ -167,6 +169,17 @@ type recipeCacheEntry struct {
 	usage   model.Usage
 }
 
+// priceUsage computes the cost of a research call's usage. A request cut off
+// by a timeout or cancellation reports no usage although it may have been
+// billed: the cost is then marked incomplete (a lower bound), or unknown if
+// no response arrived at all (see pricing.PriceTable.Apply).
+func (s *Server) priceUsage(ctx context.Context, u *model.Usage, err error) {
+	s.prices.Apply(u)
+	if err != nil && ctx.Err() != nil && u.CostKnown && !u.Cached && u.Provider != "demo" {
+		u.Incomplete = true
+	}
+}
+
 // cachedUsage returns the usage of a cache hit: no new AI calls, no cost.
 func cachedUsage(original model.Usage) model.Usage {
 	return model.Usage{Provider: original.Provider, Model: original.Model, Cached: true, CostKnown: true}
@@ -180,7 +193,7 @@ func logUsage(what, store string, u model.Usage) {
 	slog.Info("ai usage", "call", what, "store", store, "provider", u.Provider, "model", u.Model,
 		"requests", u.Requests, "input_tokens", u.InputTokens, "output_tokens", u.OutputTokens,
 		"cache_read_tokens", u.CacheReadTokens, "cache_write_tokens", u.CacheWriteTokens,
-		"web_searches", u.WebSearches, "web_fetches", u.WebFetches, "cost_eur", u.CostEUR, "cost_known", u.CostKnown)
+		"web_searches", u.WebSearches, "web_fetches", u.WebFetches, "cost_eur", u.CostEUR, "cost_known", u.CostKnown, "incomplete", u.Incomplete)
 }
 
 // priceEvent is one line in the NDJSON stream of /api/prices/compare.
@@ -339,8 +352,8 @@ func (s *Server) storePrices(ctx context.Context, sem chan struct{}, st model.St
 		sp, usage, err = s.researcher.FindPrices(storeCtx, st, ingredients, plz)
 		sp.StoreID = st.ID
 		// Usage is reported for failed research too: the calls made so far
-		// were billed. (A request cut off by the timeout reports nothing.)
-		s.prices.Apply(&usage)
+		// were billed.
+		s.priceUsage(storeCtx, &usage, err)
 		sp.Usage = &usage
 		logUsage("price research", st.ID, usage)
 		switch {
