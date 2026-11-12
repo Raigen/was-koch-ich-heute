@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/raigen/was-koch-ich-heute/backend/internal/mealie"
 	"github.com/raigen/was-koch-ich-heute/backend/internal/mealie/mealietest"
@@ -93,6 +94,9 @@ func TestMealieSearchAndRecipe(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("Content-Type") != "image/webp" || string(body) != string(mealietest.ImageBytes) {
 		t.Errorf("image: %d %q", resp.StatusCode, resp.Header.Get("Content-Type"))
 	}
+	if resp.Header.Get("X-Content-Type-Options") != "nosniff" || !strings.Contains(resp.Header.Get("Content-Security-Policy"), "sandbox") {
+		t.Errorf("image: missing security headers: %v", resp.Header)
+	}
 }
 
 func TestMealieInputValidation(t *testing.T) {
@@ -143,5 +147,26 @@ func TestMealieErrorMessages(t *testing.T) {
 	ts = newMealieTestServer(t, closed.URL, mealietest.Token)
 	if code := getJSON(t, ts.URL+"/api/mealie/recipes", &e); code != http.StatusBadGateway || !strings.Contains(e.Error, "nicht erreichbar") {
 		t.Errorf("unreachable: %d %q", code, e.Error)
+	}
+}
+
+func TestMealieTimeoutMessage(t *testing.T) {
+	slow := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-time.After(2 * time.Second):
+		case <-r.Context().Done():
+		}
+	}))
+	defer slow.Close()
+	c, err := mealie.New(mealie.Config{BaseURL: slow.URL, Token: "x", Timeout: 50 * time.Millisecond})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(New(research.NewDemo(), Options{Mealie: c}).Handler())
+	defer ts.Close()
+
+	var e struct{ Error string }
+	if code := getJSON(t, ts.URL+"/api/mealie/recipes", &e); code != http.StatusGatewayTimeout || !strings.Contains(e.Error, "Zeitüberschreitung") {
+		t.Errorf("slow Mealie: %d %q, want 504 with Zeitüberschreitung", code, e.Error)
 	}
 }

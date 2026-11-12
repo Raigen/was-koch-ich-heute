@@ -50,7 +50,9 @@ type Config struct {
 	PublicURL string
 	// Token is a Mealie API token (user profile → API tokens).
 	Token string
-	// Timeout per request (default 15 s).
+	// Timeout per request (default 15 s). It is applied as a context deadline,
+	// so an exceeded timeout is reported as context.DeadlineExceeded rather
+	// than as an unreachable instance.
 	Timeout time.Duration
 }
 
@@ -59,6 +61,7 @@ type Client struct {
 	base      *url.URL
 	publicURL string
 	token     string
+	timeout   time.Duration
 	http      *http.Client
 
 	mu        sync.Mutex
@@ -95,7 +98,10 @@ func New(cfg Config) (*Client, error) {
 		base:      base,
 		publicURL: public,
 		token:     strings.TrimSpace(cfg.Token),
-		http:      &http.Client{Timeout: cfg.Timeout},
+		timeout:   cfg.Timeout,
+		// No http.Client.Timeout: its error would be indistinguishable from an
+		// unreachable host. The per-request context deadline is used instead.
+		http: &http.Client{},
 	}, nil
 }
 
@@ -128,26 +134,34 @@ func (c *Client) endpoint(path string, q url.Values) string {
 }
 
 // do performs an authenticated GET request and returns the response for a
-// 2xx status. Other statuses are converted to the package errors.
+// 2xx status. Other statuses are converted to the package errors. A timeout
+// (the client's own or the caller's) is returned as context.DeadlineExceeded.
+// The request deadline lasts until the response body is closed.
 func (c *Client) do(ctx context.Context, path string, q url.Values) (*http.Response, error) {
+	ctx, cancel := context.WithTimeout(ctx, c.timeout)
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.endpoint(path, q), nil)
 	if err != nil {
+		cancel()
 		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+c.token)
 	resp, err := c.http.Do(req)
 	if err != nil {
-		if ctx.Err() != nil {
-			return nil, ctx.Err()
+		ctxErr := ctx.Err() // read before cancel(), which would set it
+		cancel()
+		if ctxErr != nil {
+			return nil, ctxErr
 		}
 		// url.Error contains method, URL and cause, never the header.
 		return nil, fmt.Errorf("%w: %v", ErrUnreachable, err)
 	}
 	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		resp.Body = &cancelOnClose{ReadCloser: resp.Body, cancel: cancel}
 		return resp, nil
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	resp.Body.Close()
+	cancel()
 	switch resp.StatusCode {
 	case http.StatusUnauthorized, http.StatusForbidden:
 		return nil, ErrUnauthorized
@@ -158,6 +172,18 @@ func (c *Client) do(ctx context.Context, path string, q url.Values) (*http.Respo
 	}
 }
 
+// cancelOnClose releases the request context when the body is closed.
+type cancelOnClose struct {
+	io.ReadCloser
+	cancel context.CancelFunc
+}
+
+func (b *cancelOnClose) Close() error {
+	err := b.ReadCloser.Close()
+	b.cancel()
+	return err
+}
+
 func (c *Client) getJSON(ctx context.Context, path string, q url.Values, out any) error {
 	resp, err := c.do(ctx, path, q)
 	if err != nil {
@@ -165,6 +191,9 @@ func (c *Client) getJSON(ctx context.Context, path string, q url.Values, out any
 	}
 	defer resp.Body.Close()
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(out); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return err
+		}
 		return fmt.Errorf("mealie: invalid JSON response: %w", err)
 	}
 	return nil
@@ -230,22 +259,42 @@ func (c *Client) RecipeURL(groupSlug, recipeSlug string) string {
 	return c.publicURL + "/g/" + url.PathEscape(groupSlug) + "/r/" + url.PathEscape(recipeSlug)
 }
 
-// Image is a recipe image streamed from Mealie. The caller must close Body.
+// Image is a recipe image loaded from Mealie.
 type Image struct {
-	Body        io.ReadCloser
+	Data        []byte
 	ContentType string
 }
 
+// ErrImageTooLarge means an image exceeds MaxImageBytes.
+var ErrImageTooLarge = errors.New("mealie: image too large")
+
+// imageTypes are the content types passed through to the browser. Anything
+// else (notably image/svg+xml, which can carry script) is served as WebP,
+// the format Mealie stores its recipe images in.
+var imageTypes = map[string]bool{"image/webp": true, "image/png": true, "image/jpeg": true, "image/gif": true, "image/avif": true}
+
 // Image fetches the medium-sized image ("min-original.webp") of a recipe.
-// recipeID must be a validated recipe UUID.
+// recipeID must be a validated recipe UUID. Images larger than MaxImageBytes
+// are rejected with ErrImageTooLarge instead of being truncated.
 func (c *Client) Image(ctx context.Context, recipeID string) (Image, error) {
 	resp, err := c.do(ctx, "/api/media/recipes/"+url.PathEscape(recipeID)+"/images/min-original.webp", nil)
 	if err != nil {
 		return Image{}, err
 	}
-	ct := resp.Header.Get("Content-Type")
-	if !strings.HasPrefix(ct, "image/") {
+	defer resp.Body.Close()
+	if resp.ContentLength > MaxImageBytes {
+		return Image{}, ErrImageTooLarge
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, MaxImageBytes+1))
+	if err != nil {
+		return Image{}, err
+	}
+	if len(data) > MaxImageBytes {
+		return Image{}, ErrImageTooLarge
+	}
+	ct := strings.ToLower(strings.TrimSpace(strings.Split(resp.Header.Get("Content-Type"), ";")[0]))
+	if !imageTypes[ct] {
 		ct = "image/webp"
 	}
-	return Image{Body: resp.Body, ContentType: ct}, nil
+	return Image{Data: data, ContentType: ct}, nil
 }

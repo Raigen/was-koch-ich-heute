@@ -243,11 +243,17 @@ func mapIngredient(in Ingredient) (model.Ingredient, bool) {
 		if text == "" {
 			text = in.OriginalText.String()
 		}
-		if in.Quantity > 0 || in.Unit != nil {
+		if in.Unit != nil {
 			// Quantity and unit are structured, only the food is free text.
 			ing = model.Ingredient{Name: cleanName(text), Quantity: in.Quantity, Unit: unitLabel(in.Unit)}
 		} else {
+			// Without a unit the line is unparsed. Mealie may still send a
+			// default quantity (older versions use 1), so the text wins:
+			// {quantity: 1, note: "500 g Mehl"} is 500 g Mehl.
 			ing = parseFreeText(text)
+			if ing.Quantity == 0 && in.Quantity > 0 {
+				ing.Quantity = in.Quantity
+			}
 		}
 	}
 	if ing.Name == "" {
@@ -317,8 +323,14 @@ func canonicalUnit(u string) string {
 // Free-text ingredient lines such as "500 g Mehl", "1 1/2 EL Öl", "½ Zwiebel,
 // gewürfelt" or "2-3 Möhren".
 var (
-	fractionChars = map[rune]float64{'½': 0.5, '⅓': 1.0 / 3, '⅔': 2.0 / 3, '¼': 0.25, '¾': 0.75, '⅛': 0.125, '⅕': 0.2}
-	numberPattern = `(?:\d+\s+\d+\s*/\s*\d+|\d+\s*/\s*\d+|\d+(?:[.,]\d+)?\s*[½⅓⅔¼¾⅛⅕]?|[½⅓⅔¼¾⅛⅕])`
+	fractionChars = map[rune]float64{
+		'½': 1.0 / 2, '⅓': 1.0 / 3, '⅔': 2.0 / 3, '¼': 1.0 / 4, '¾': 3.0 / 4,
+		'⅕': 1.0 / 5, '⅖': 2.0 / 5, '⅗': 3.0 / 5, '⅘': 4.0 / 5, '⅙': 1.0 / 6, '⅚': 5.0 / 6,
+		'⅐': 1.0 / 7, '⅛': 1.0 / 8, '⅜': 3.0 / 8, '⅝': 5.0 / 8, '⅞': 7.0 / 8, '⅑': 1.0 / 9, '⅒': 1.0 / 10,
+	}
+	fractionClass = `[½⅓⅔¼¾⅕⅖⅗⅘⅙⅚⅐⅛⅜⅝⅞⅑⅒]`
+	numberPattern = `(?:\d+\s+\d+\s*/\s*\d+|\d+\s*/\s*\d+|\d+(?:[.,]\d+)?\s*` + fractionClass + `?|` + fractionClass + `)`
+	slashRe       = regexp.MustCompile(`\s*/\s*`)
 	quantityRe    = regexp.MustCompile(`^(` + numberPattern + `)(?:\s*(?:-|–|bis|to)\s*(` + numberPattern + `))?`)
 	unitWordRe    = regexp.MustCompile(`^\s*([\p{L}]+\.?)`)
 	parensRe      = regexp.MustCompile(`\s*\([^)]*\)`)
@@ -365,12 +377,11 @@ func parseNumber(s string) float64 {
 	if s == "" {
 		return total
 	}
-	fields := strings.Fields(strings.ReplaceAll(s, " /", "/"))
-	for _, f := range fields {
-		f = strings.ReplaceAll(f, " ", "")
+	// "2 / 3" → "2/3", so that a fraction is one field.
+	for _, f := range strings.Fields(slashRe.ReplaceAllString(s, "/")) {
 		if num, den, ok := strings.Cut(f, "/"); ok {
-			n, err1 := strconv.ParseFloat(strings.TrimSpace(num), 64)
-			d, err2 := strconv.ParseFloat(strings.TrimSpace(den), 64)
+			n, err1 := strconv.ParseFloat(num, 64)
+			d, err2 := strconv.ParseFloat(den, 64)
 			if err1 == nil && err2 == nil && d != 0 {
 				total += n / d
 			}
@@ -384,13 +395,24 @@ func parseNumber(s string) float64 {
 }
 
 // cleanName removes preparation notes so that the name works as a shop
-// search term: "Zwiebeln (rot), fein gewürfelt" → "Zwiebeln".
+// search term: "Zwiebeln (rot), fein gewürfelt" → "Zwiebeln". Parentheses
+// with a number are a size hint and are kept at the end:
+// "(400 g) Tomaten" → "Tomaten (400 g)".
 func cleanName(s string) string {
+	var hints []string
+	for _, p := range parensRe.FindAllString(s, -1) {
+		if strings.ContainsAny(p, "0123456789") {
+			hints = append(hints, strings.TrimSpace(p))
+		}
+	}
 	s = parensRe.ReplaceAllString(s, "")
 	if before, _, ok := strings.Cut(s, ","); ok && strings.TrimSpace(before) != "" {
 		s = before
 	}
 	s = strings.TrimFunc(s, func(r rune) bool { return unicode.IsSpace(r) || r == '-' || r == ':' })
+	if s != "" && len(hints) > 0 {
+		s += " " + strings.Join(hints, " ")
+	}
 	if r := []rune(s); len(r) > 120 {
 		s = strings.TrimSpace(string(r[:120]))
 	}
@@ -407,44 +429,48 @@ func roundQuantity(q float64) float64 {
 // ---------------------------------------------------------------------------
 // Staples
 
-// pantrySuffixes are German staples that people usually have at home; a name
-// matches if one of its words equals or ends with an entry ("Meersalz",
-// "Olivenöl").
-var pantrySuffixes = []string{"salz", "pfeffer", "öl"}
+// pantryCore are staples that people usually have at home. Oils and salts are
+// listed explicitly: matching the suffix "öl" would also mark specialty oils
+// such as Chiliöl or Sesamöl.
+var pantryCore = wordSet(`salz meersalz jodsalz speisesalz kochsalz pfeffer
+	öl olivenöl rapsöl sonnenblumenöl pflanzenöl speiseöl zucker wasser
+	salt pepper oil sugar water`)
 
-// pantryExact are words that only count as a staple on their own, because
-// compounds are often specific products ("Vanillezucker", "Kokoswasser").
-var pantryExact = map[string]bool{"zucker": true, "wasser": true, "salt": true, "sugar": true, "water": true}
+// pantryFiller are words that may accompany a staple without changing it
+// ("Pfeffer aus der Mühle", "Olivenöl extra vergine", "black pepper").
+var pantryFiller = wordSet(`und oder etwas nach belieben geschmack aus der dem mühle zum zum braten
+	anbraten frisch frischer frisches gemahlen gemahlener schwarz schwarzer weiß weißer bunt bunter
+	grob grobes grober fein feines feiner extra vergine nativ natives lauwarm lauwarmes kalt kaltes
+	warm warmes heiß heißes kochendes ein eine wenig prise
+	and or to taste freshly fresh ground black white olive vegetable sunflower canola rapeseed
+	cooking kosher sea extra virgin warm cold hot some a pinch of`)
 
-// pantryPhrases are English staples matched against the whole name.
-var pantryPhrases = map[string]bool{
-	"pepper": true, "black pepper": true, "salt and pepper": true, "oil": true, "olive oil": true,
-	"vegetable oil": true, "sunflower oil": true, "canola oil": true, "cooking oil": true,
+func wordSet(s string) map[string]bool {
+	m := map[string]bool{}
+	for _, w := range strings.Fields(s) {
+		m[w] = true
+	}
+	return m
 }
 
-// IsPantry reports whether an ingredient is a staple (salt, pepper, oil,
-// sugar, water) that is unchecked by default in the shopping list.
+// IsPantry reports whether an ingredient is a staple (salt, pepper, cooking
+// oil, sugar, water) that is unchecked by default in the shopping list. The
+// name must contain a staple word and nothing but filler words otherwise, so
+// "Salz und Pfeffer" is a staple but "Pfeffer-Salami" and "Vanillezucker" are
+// not.
 func IsPantry(name string) bool {
-	n := strings.ToLower(strings.TrimSpace(name))
-	if pantryPhrases[n] {
-		return true
-	}
-	words := strings.FieldsFunc(n, func(r rune) bool { return !unicode.IsLetter(r) })
-	for _, w := range words {
-		if pantryExact[w] {
-			return true
-		}
-		for _, suf := range pantrySuffixes {
-			if strings.HasSuffix(w, suf) && !excludedPantry[w] {
-				return true
-			}
+	n := strings.ToLower(parensRe.ReplaceAllString(name, ""))
+	core := false
+	for _, w := range strings.FieldsFunc(n, func(r rune) bool { return !unicode.IsLetter(r) }) {
+		switch {
+		case pantryCore[w]:
+			core = true
+		case !pantryFiller[w]:
+			return false
 		}
 	}
-	return false
+	return core
 }
-
-// excludedPantry are compounds that end like a staple but are not one.
-var excludedPantry = map[string]bool{"sesamöl": true, "kürbiskernöl": true, "trüffelöl": true, "walnussöl": true, "leinöl": true}
 
 // ImagePath is the app route that proxies a recipe image.
 func ImagePath(r RecipeSummary) string {
