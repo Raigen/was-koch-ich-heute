@@ -1,6 +1,11 @@
 services:
   app:
-    build: .
+    build:
+      context: .
+      # Der Build lädt npm- und Go-Pakete über das Netzwerk des Hosts.
+      # Unter Windows/WSL (v. a. mit VPN) hängt das Docker-Bridge-Netz
+      # sonst oft minutenlang bei "npm ci" und "go mod download".
+      network: host
     image: was-koch-ich-heute:latest
     ports:
       - "8080:8080"

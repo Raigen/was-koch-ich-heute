@@ -22,7 +22,7 @@ test:
 
 # Docker-Image bauen bzw. mit docker compose starten
 docker:
-	docker build -t was-koch-ich-heute .
+	docker build --network host -t was-koch-ich-heute .
 
 docker-up:
 	docker compose up -d --build

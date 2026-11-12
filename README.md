@@ -23,12 +23,15 @@ docker compose up -d --build
 Dann <http://localhost:8080> öffnen. Ohne Compose:
 
 ```bash
-docker build -t was-koch-ich-heute .
+docker build --network host -t was-koch-ich-heute .
 docker run -d -p 8080:8080 --env-file .env --name was-koch-ich-heute was-koch-ich-heute
 ```
 
 Das Image wird in drei Stufen gebaut (Node baut das Frontend, Go das Backend) und enthält am Ende nur
 das statische Go-Binary plus Frontend auf `distroless` (ca. 25 MB, läuft als Nicht-root-Benutzer).
+
+Der Build nutzt das Netzwerk des Hosts (`--network host` bzw. `network: host` in der Compose-Datei).
+Unter Windows/WSL hängen `npm ci` und `go mod download` im normalen Docker-Netz sonst oft minutenlang.
 
 ### Lokal entwickeln
 
