@@ -40,6 +40,8 @@ type Server struct {
 	// heartbeat is the interval of "ping" lines in the price stream. They keep
 	// the connection open through reverse proxies (nginx default: 60 s).
 	heartbeat time.Duration
+	// prices converts AI usage into an estimated cost.
+	prices pricing.PriceTable
 }
 
 // Options configures the server.
@@ -52,6 +54,8 @@ type Options struct {
 	StoreTimeout time.Duration
 	// Heartbeat is the interval of keep-alive lines in the stream (default 15 s).
 	Heartbeat time.Duration
+	// Prices is the price table for cost estimates (default: built-in prices).
+	Prices *pricing.PriceTable
 }
 
 func New(r research.Researcher, opts Options) *Server {
@@ -64,7 +68,12 @@ func New(r research.Researcher, opts Options) *Server {
 	if opts.Heartbeat <= 0 {
 		opts.Heartbeat = 15 * time.Second
 	}
+	prices := pricing.DefaultPriceTable()
+	if opts.Prices != nil {
+		prices = *opts.Prices
+	}
 	return &Server{
+		prices:       prices,
 		storeTimeout: opts.StoreTimeout,
 		heartbeat:    opts.Heartbeat,
 		researcher:   r,
@@ -124,16 +133,21 @@ func (s *Server) handleRecipeSearch(w http.ResponseWriter, r *http.Request) {
 
 	cacheKey := "recipes:" + hashKey(q)
 	if v, ok := s.cache.get(cacheKey); ok {
-		writeJSON(w, http.StatusOK, map[string]any{"recipes": v, "cached": true})
+		entry := v.(recipeCacheEntry)
+		writeJSON(w, http.StatusOK, map[string]any{"recipes": entry.recipes, "cached": true, "usage": cachedUsage(entry.usage)})
 		return
 	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), s.callTimeout)
 	defer cancel()
-	recipes, err := s.researcher.SearchRecipes(ctx, q)
+	recipes, usage, err := s.researcher.SearchRecipes(ctx, q)
+	s.priceUsage(ctx, &usage, err)
+	logUsage("recipe search", "", usage)
 	if err != nil {
 		slog.Error("recipe search failed", "err", err)
-		writeError(w, http.StatusBadGateway, err.Error())
+		// A failed research can still have been billed, so the usage is
+		// returned with the error, like for failed shops in the price stream.
+		writeJSON(w, http.StatusBadGateway, map[string]any{"error": err.Error(), "usage": usage})
 		return
 	}
 	for i := range recipes {
@@ -144,8 +158,55 @@ func (s *Server) handleRecipeSearch(w http.ResponseWriter, r *http.Request) {
 			recipes[i].Servings = q.Servings
 		}
 	}
-	s.cache.set(cacheKey, recipes, s.recipeTTL)
-	writeJSON(w, http.StatusOK, map[string]any{"recipes": recipes, "cached": false})
+	s.cache.set(cacheKey, recipeCacheEntry{recipes, usage}, s.recipeTTL)
+	writeJSON(w, http.StatusOK, map[string]any{"recipes": recipes, "cached": false, "usage": usage})
+}
+
+// recipeCacheEntry is a cached recipe search result. The usage of the
+// original research is kept for its provider and model.
+type recipeCacheEntry struct {
+	recipes []model.Recipe
+	usage   model.Usage
+}
+
+// priceUsage computes the cost of a research call's usage.
+//   - A request cut off by a timeout or cancellation reports no usage
+//     although it may have been billed: the cost is marked incomplete (a
+//     lower bound), or unknown if no response arrived at all (see
+//     pricing.PriceTable.Apply).
+//   - If the provider certainly rejected the failing request before billing
+//     (research.IsNotBilled, e.g. an invalid key or a rate limit), the usage
+//     reported so far is complete; without any usage the cost is 0.
+func (s *Server) priceUsage(ctx context.Context, u *model.Usage, err error) {
+	s.prices.Apply(u)
+	if err == nil || u.Cached || u.Provider == "demo" {
+		return
+	}
+	if research.IsNotBilled(err) && ctx.Err() == nil {
+		if !u.CostKnown && u.Requests == 0 && u.TotalTokens() == 0 && u.WebSearches == 0 && u.WebFetches == 0 {
+			u.CostEUR, u.CostKnown = 0, true
+		}
+		return
+	}
+	if ctx.Err() != nil && u.CostKnown {
+		u.Incomplete = true
+	}
+}
+
+// cachedUsage returns the usage of a cache hit: no new AI calls, no cost.
+func cachedUsage(original model.Usage) model.Usage {
+	return model.Usage{Provider: original.Provider, Model: original.Model, Cached: true, CostKnown: true}
+}
+
+// logUsage logs the AI usage of a research call (no user data, no keys).
+func logUsage(what, store string, u model.Usage) {
+	if u.Requests == 0 {
+		return
+	}
+	slog.Info("ai usage", "call", what, "store", store, "provider", u.Provider, "model", u.Model,
+		"requests", u.Requests, "input_tokens", u.InputTokens, "output_tokens", u.OutputTokens,
+		"cache_read_tokens", u.CacheReadTokens, "cache_write_tokens", u.CacheWriteTokens,
+		"web_searches", u.WebSearches, "web_fetches", u.WebFetches, "cost_eur", u.CostEUR, "cost_known", u.CostKnown, "incomplete", u.Incomplete)
 }
 
 // priceEvent is one line in the NDJSON stream of /api/prices/compare.
@@ -254,6 +315,16 @@ func (s *Server) handlePriceCompare(w http.ResponseWriter, r *http.Request) {
 	wg.Wait()
 
 	cmp := pricing.Compare(ingredients, results)
+	var usages []model.Usage
+	for _, sp := range results {
+		if sp.Usage != nil {
+			usages = append(usages, *sp.Usage)
+		}
+	}
+	if len(usages) > 0 {
+		total := model.SumUsage(usages...)
+		cmp.Usage = &total
+	}
 	emit(priceEvent{Type: "summary", Comparison: &cmp})
 }
 
@@ -271,6 +342,12 @@ func (s *Server) storePrices(ctx context.Context, sem chan struct{}, st model.St
 	if v, ok := s.cache.get(cacheKey); ok {
 		sp = v.(model.StorePrices)
 		sp.Cached = true
+		var original model.Usage
+		if sp.Usage != nil {
+			original = *sp.Usage
+		}
+		u := cachedUsage(original)
+		sp.Usage = &u
 	} else {
 		select {
 		case sem <- struct{}{}:
@@ -281,9 +358,17 @@ func (s *Server) storePrices(ctx context.Context, sem chan struct{}, st model.St
 		storeCtx, cancel := context.WithTimeout(ctx, s.storeTimeout)
 		defer cancel()
 
-		var err error
-		sp, err = s.researcher.FindPrices(storeCtx, st, ingredients, plz)
+		var (
+			usage model.Usage
+			err   error
+		)
+		sp, usage, err = s.researcher.FindPrices(storeCtx, st, ingredients, plz)
 		sp.StoreID = st.ID
+		// Usage is reported for failed research too: the calls made so far
+		// were billed.
+		s.priceUsage(storeCtx, &usage, err)
+		sp.Usage = &usage
+		logUsage("price research", st.ID, usage)
 		switch {
 		case err != nil && errors.Is(storeCtx.Err(), context.DeadlineExceeded):
 			slog.Warn("price research timed out", "store", st.ID, "limit", s.storeTimeout)

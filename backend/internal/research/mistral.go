@@ -66,22 +66,23 @@ const (
 		"(e.g. with \"site:<domain> <product>\"). Results from other websites do not count as a shop price."
 )
 
-func (m *Mistral) SearchRecipes(ctx context.Context, q model.RecipeQuery) ([]model.Recipe, error) {
-	text, err := m.run(ctx, recipeSystemPrompt(mistralRecipeTools), recipeUserPrompt(q))
+func (m *Mistral) SearchRecipes(ctx context.Context, q model.RecipeQuery) ([]model.Recipe, model.Usage, error) {
+	text, usage, err := m.run(ctx, recipeSystemPrompt(mistralRecipeTools), recipeUserPrompt(q))
 	if err != nil {
-		return nil, err
+		return nil, usage, err
 	}
-	return parseRecipes(text)
+	recipes, err := parseRecipes(text)
+	return recipes, usage, err
 }
 
-func (m *Mistral) FindPrices(ctx context.Context, store model.Store, ingredients []model.Ingredient, postalCode string) (model.StorePrices, error) {
-	text, err := m.run(ctx, priceSystemPrompt(mistralPriceTools), priceUserPrompt(store, ingredients, postalCode))
+func (m *Mistral) FindPrices(ctx context.Context, store model.Store, ingredients []model.Ingredient, postalCode string) (model.StorePrices, model.Usage, error) {
+	text, usage, err := m.run(ctx, priceSystemPrompt(mistralPriceTools), priceUserPrompt(store, ingredients, postalCode))
 	if err != nil {
-		return model.StorePrices{StoreID: store.ID}, err
+		return model.StorePrices{StoreID: store.ID}, usage, err
 	}
 	sp, err := parsePrices(store, text)
 	if err != nil {
-		return sp, err
+		return sp, usage, err
 	}
 	// Mistral's web search cannot be restricted to domains, so links to other
 	// sites are dropped and the confidence is lowered.
@@ -94,7 +95,7 @@ func (m *Mistral) FindPrices(ctx context.Context, store model.Store, ingredients
 			}
 		}
 	}
-	return sp, nil
+	return sp, usage, nil
 }
 
 // --- Conversations API wire format ------------------------------------------
@@ -146,13 +147,62 @@ type mistralResponse struct {
 	ConversationID string `json:"conversation_id"`
 	Outputs        []struct {
 		Type    string         `json:"type"` // "message.output", "tool.execution", …
+		Name    string         `json:"name"` // tool name of "tool.execution" entries
 		Content mistralContent `json:"content"`
 	} `json:"outputs"`
+	Usage mistralUsage `json:"usage"`
 }
 
-func (m *Mistral) run(ctx context.Context, system, prompt string) (string, error) {
+// mistralUsage is the usage object of a conversation response, see
+// docs.mistral.ai (agent tools: websearch; prompt caching).
+type mistralUsage struct {
+	PromptTokens     int64 `json:"prompt_tokens"`
+	CompletionTokens int64 `json:"completion_tokens"`
+	TotalTokens      int64 `json:"total_tokens"`
+	// ConnectorTokens are the tokens of tool results (e.g. web search hits),
+	// counted separately from prompt_tokens.
+	ConnectorTokens int64 `json:"connector_tokens"`
+	// Connectors counts the tool calls per tool, e.g. {"web_search": 2}.
+	Connectors          map[string]float64 `json:"connectors"`
+	PromptTokensDetails struct {
+		CachedTokens int64 `json:"cached_tokens"`
+	} `json:"prompt_tokens_details"`
+}
+
+// usage converts the Mistral response into the common usage format.
+// prompt_tokens includes cached tokens; connector tokens are counted as input.
+func (m *Mistral) usage(resp mistralResponse) model.Usage {
+	u := resp.Usage
+	cached := min(u.PromptTokensDetails.CachedTokens, u.PromptTokens)
+	searches := 0
+	for name, n := range u.Connectors {
+		if strings.HasPrefix(name, "web_search") {
+			searches += int(n)
+		}
+	}
+	if len(u.Connectors) == 0 {
+		// Older responses without the connectors map: count the tool entries.
+		for _, out := range resp.Outputs {
+			if out.Type == "tool.execution" && strings.HasPrefix(out.Name, "web_search") {
+				searches++
+			}
+		}
+	}
+	return model.Usage{
+		Provider:        "mistral",
+		Model:           m.model,
+		Requests:        1,
+		InputTokens:     u.PromptTokens - cached + u.ConnectorTokens,
+		OutputTokens:    u.CompletionTokens,
+		CacheReadTokens: cached,
+		WebSearches:     searches,
+	}
+}
+
+func (m *Mistral) run(ctx context.Context, system, prompt string) (string, model.Usage, error) {
+	usage := model.Usage{Provider: "mistral", Model: m.model}
 	if m.apiKey == "" {
-		return "", errors.New("Mistral API: MISTRAL_API_KEY ist nicht gesetzt")
+		return "", usage, notBilled(errors.New("Mistral API: MISTRAL_API_KEY ist nicht gesetzt"))
 	}
 	req := mistralRequest{
 		Model:        m.model,
@@ -167,33 +217,50 @@ func (m *Mistral) run(ctx context.Context, system, prompt string) (string, error
 	}
 	body, err := json.Marshal(req)
 	if err != nil {
-		return "", err
+		return "", usage, notBilled(err)
 	}
 
 	var resp mistralResponse
+	// mayBeBilled is set once an attempt failed in a way where the API may
+	// have done work (network error, timeout, server error).
+	mayBeBilled := false
 	for attempt := 0; ; attempt++ {
 		status, raw, err := m.post(ctx, "/v1/conversations", body)
+		if err != nil || (status >= 300 && !rejectedBeforeBilling(status)) {
+			mayBeBilled = true
+		}
 		retryable := err != nil || status == http.StatusTooManyRequests || status >= 500
 		if retryable && attempt < m.maxRetries && ctx.Err() == nil {
 			if err := sleep(ctx, time.Duration(1<<attempt)*2*time.Second); err != nil {
-				return "", err
+				return "", usage, err
 			}
 			continue
 		}
 		if err != nil {
-			return "", fmt.Errorf("Mistral API: %w", err)
+			return "", usage, fmt.Errorf("Mistral API: %w", err)
 		}
+		var httpErr error
 		switch {
 		case status == http.StatusUnauthorized || status == http.StatusForbidden:
-			return "", fmt.Errorf("Mistral API: Zugang verweigert – MISTRAL_API_KEY prüfen (%d)", status)
+			httpErr = fmt.Errorf("Mistral API: Zugang verweigert – MISTRAL_API_KEY prüfen (%d)", status)
 		case status == http.StatusTooManyRequests:
-			return "", errors.New("Mistral API: Rate-Limit erreicht, bitte später erneut versuchen")
+			httpErr = errors.New("Mistral API: Rate-Limit erreicht, bitte später erneut versuchen")
 		case status >= 300:
-			return "", fmt.Errorf("Mistral API: HTTP %d: %s", status, truncate(string(raw), 300))
+			httpErr = fmt.Errorf("Mistral API: HTTP %d: %s", status, truncate(string(raw), 300))
+		}
+		if httpErr != nil {
+			if !mayBeBilled {
+				httpErr = notBilled(httpErr)
+			}
+			return "", usage, httpErr
 		}
 		if err := json.Unmarshal(raw, &resp); err != nil {
-			return "", fmt.Errorf("Mistral API: unerwartete Antwort: %w", err)
+			return "", usage, fmt.Errorf("Mistral API: unerwartete Antwort: %w", err)
 		}
+		// Failed attempts report no usage; only the successful response counts.
+		// If an earlier attempt may have been billed, the usage is a lower bound.
+		usage = m.usage(resp)
+		usage.Incomplete = mayBeBilled
 		break
 	}
 
@@ -209,9 +276,9 @@ func (m *Mistral) run(ctx context.Context, system, prompt string) (string, error
 		}
 	}
 	if sb.Len() == 0 {
-		return "", errors.New("Mistral API: Antwort enthielt keinen Text")
+		return "", usage, errors.New("Mistral API: Antwort enthielt keinen Text")
 	}
-	return sb.String(), nil
+	return sb.String(), usage, nil
 }
 
 func (m *Mistral) post(ctx context.Context, path string, body []byte) (int, []byte, error) {

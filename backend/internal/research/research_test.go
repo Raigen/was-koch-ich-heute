@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -44,13 +45,17 @@ func TestClaudeFindPrices(t *testing.T) {
 		bodies = append(bodies, body)
 		w.Header().Set("Content-Type", "application/json")
 		stop, text := "end_turn", "Result:\n```json\n{\"offers\":[{\"ingredient\":\"Spaghetti\",\"productName\":\"ja! Spaghetti\",\"price\":0.99,\"packageAmount\":500,\"packageUnit\":\"g\",\"packagesNeeded\":1,\"confidence\":\"hoch\"}],\"notFound\":[\"Safran\",\"\"]}\n```"
+		usage := map[string]any{"input_tokens": 5000, "output_tokens": 400, "cache_read_input_tokens": 1000,
+			"cache_creation_input_tokens": 0, "server_tool_use": map[string]any{"web_search_requests": 1, "web_fetch_requests": 1}}
 		if len(bodies) == 1 {
 			stop, text = "pause_turn", "Still searching …"
+			usage = map[string]any{"input_tokens": 3000, "output_tokens": 200, "cache_read_input_tokens": 0,
+				"cache_creation_input_tokens": 500, "server_tool_use": map[string]any{"web_search_requests": 2, "web_fetch_requests": 0}}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
 			"stop_reason": stop, "content": []map[string]any{{"type": "text", "text": text}},
-			"usage": map[string]any{"input_tokens": 1, "output_tokens": 1},
+			"usage": usage,
 		})
 	}))
 	defer srv.Close()
@@ -59,12 +64,22 @@ func TestClaudeFindPrices(t *testing.T) {
 	c.client = anthropic.NewClient(option.WithAPIKey("test"), option.WithBaseURL(srv.URL), option.WithMaxRetries(0))
 
 	store, _ := StoreByID("rewe")
-	res, err := c.FindPrices(context.Background(), store, []model.Ingredient{{Name: "Spaghetti", Quantity: 500, Unit: "g"}, {Name: "Safran", Quantity: 1, Unit: "Prise"}}, "10115")
+	res, usage, err := c.FindPrices(context.Background(), store, []model.Ingredient{{Name: "Spaghetti", Quantity: 500, Unit: "g"}, {Name: "Safran", Quantity: 1, Unit: "Prise"}}, "10115")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(bodies) != 2 {
 		t.Fatalf("expected 2 requests (pause_turn resumed), got %d", len(bodies))
+	}
+	// The usage is summed over the paused and the final response.
+	want := model.Usage{Provider: "claude", Model: "claude-opus-5-5", Requests: 2, InputTokens: 8000, OutputTokens: 600,
+		CacheReadTokens: 1000, CacheWriteTokens: 500, WebSearches: 3, WebFetches: 1,
+		Calls: []model.ModelCall{
+			{Model: "claude-opus-5-5", InputTokens: 3000, OutputTokens: 200, CacheWriteTokens: 500},
+			{Model: "claude-opus-5-5", InputTokens: 5000, OutputTokens: 400, CacheReadTokens: 1000},
+		}}
+	if !reflect.DeepEqual(usage, want) {
+		t.Errorf("usage = %+v, want %+v", usage, want)
 	}
 	if msgs := bodies[1]["messages"].([]any); len(msgs) != 2 {
 		t.Errorf("continuation should contain 2 messages, has %d", len(msgs))
@@ -83,5 +98,152 @@ func TestClaudeFindPrices(t *testing.T) {
 	}
 	if len(res.NotFound) != 1 || res.NotFound[0] != "Safran" {
 		t.Errorf("wrong NotFound: %v", res.NotFound)
+	}
+}
+
+// TestClaudeUsageOnRefusal checks that usage is reported together with an
+// error, so that a refused research still shows what it cost.
+func TestClaudeUsageOnRefusal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5","stop_reason":"refusal",
+			"content":[],"usage":{"input_tokens":700,"output_tokens":10,"server_tool_use":{"web_search_requests":1}}}`)
+	}))
+	defer srv.Close()
+
+	c := NewClaude(Config{APIKey: "test"})
+	c.client = anthropic.NewClient(option.WithAPIKey("test"), option.WithBaseURL(srv.URL), option.WithMaxRetries(0))
+	_, usage, err := c.SearchRecipes(context.Background(), model.RecipeQuery{Query: "dal"})
+	if err == nil {
+		t.Fatal("expected a refusal error")
+	}
+	if usage.Requests != 1 || usage.InputTokens != 700 || usage.WebSearches != 1 {
+		t.Errorf("usage = %+v", usage)
+	}
+}
+
+// TestClaudeFallbackIterations checks that a response served by a refusal
+// fallback is split into per-model calls via usage.iterations, and that
+// iterations which do not add up are ignored.
+func TestClaudeFallbackIterations(t *testing.T) {
+	var resp anthropic.BetaMessage
+	raw := `{"id":"m","type":"message","role":"assistant","model":"claude-opus-5-5","stop_reason":"end_turn","content":[],
+		"usage":{"input_tokens":300,"output_tokens":30,"cache_read_input_tokens":0,"cache_creation_input_tokens":0,
+		"iterations":[
+			{"type":"message","model":"claude-opus-5-5","input_tokens":100,"output_tokens":10},
+			{"type":"compaction","input_tokens":999,"output_tokens":99},
+			{"type":"fallback_message","model":"claude-opus-5","input_tokens":200,"output_tokens":20}]}}`
+	if err := json.Unmarshal([]byte(raw), &resp); err != nil {
+		t.Fatal(err)
+	}
+	want := []model.ModelCall{
+		{Model: "claude-opus-5-5", InputTokens: 100, OutputTokens: 10},
+		{Model: "claude-opus-5", InputTokens: 200, OutputTokens: 20},
+	}
+	if got := claudeCalls(&resp); !reflect.DeepEqual(got, want) {
+		t.Errorf("calls = %+v, want %+v", got, want)
+	}
+
+	resp.Usage.InputTokens = 301 // iterations no longer add up: one call for the whole response
+	want = []model.ModelCall{{Model: "claude-opus-5-5", InputTokens: 301, OutputTokens: 30}}
+	if got := claudeCalls(&resp); !reflect.DeepEqual(got, want) {
+		t.Errorf("calls = %+v, want %+v", got, want)
+	}
+}
+
+// TestClaudeNotBilled checks which API errors are marked as certainly not
+// billed: 4xx rejections are, server errors are not, and the usage of
+// earlier responses is kept.
+func TestClaudeNotBilled(t *testing.T) {
+	for _, c := range []struct {
+		status    int
+		notBilled bool
+	}{{401, true}, {429, true}, {400, true}, {408, false}, {500, false}, {529, false}} {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(c.status)
+			_, _ = io.WriteString(w, `{"type":"error","error":{"type":"some_error","message":"nope"}}`)
+		}))
+		cl := NewClaude(Config{APIKey: "test"})
+		cl.client = anthropic.NewClient(option.WithAPIKey("test"), option.WithBaseURL(srv.URL), option.WithMaxRetries(0))
+		_, usage, err := cl.SearchRecipes(context.Background(), model.RecipeQuery{Query: "dal"})
+		srv.Close()
+		if err == nil || IsNotBilled(err) != c.notBilled || usage.Requests != 0 {
+			t.Errorf("HTTP %d: err=%v notBilled=%v usage=%+v", c.status, err, IsNotBilled(err), usage)
+		}
+	}
+
+	// A rate limit on a pause_turn continuation keeps the first response's usage.
+	calls := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		w.Header().Set("Content-Type", "application/json")
+		if calls > 1 {
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = io.WriteString(w, `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`)
+			return
+		}
+		_, _ = io.WriteString(w, `{"id":"m","type":"message","role":"assistant","model":"claude-opus-5-5","stop_reason":"pause_turn",
+			"content":[{"type":"text","text":"…"}],"usage":{"input_tokens":100,"output_tokens":5}}`)
+	}))
+	defer srv.Close()
+	cl := NewClaude(Config{APIKey: "test"})
+	cl.client = anthropic.NewClient(option.WithAPIKey("test"), option.WithBaseURL(srv.URL), option.WithMaxRetries(0))
+	_, usage, err := cl.SearchRecipes(context.Background(), model.RecipeQuery{Query: "dal"})
+	if !IsNotBilled(err) || usage.Requests != 1 || usage.InputTokens != 100 {
+		t.Errorf("continuation: err=%v usage=%+v", err, usage)
+	}
+}
+
+// TestClaudeHiddenRetries checks the SDK's own retries: a failed attempt that
+// may have been billed (here 500) makes the usage incomplete and prevents a
+// later 4xx from being classified as not billed.
+func TestClaudeHiddenRetries(t *testing.T) {
+	run := func(final int) (model.Usage, int, error) {
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After-Ms", "1")
+			if calls == 1 {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = io.WriteString(w, `{"type":"error","error":{"type":"api_error","message":"boom"}}`)
+				return
+			}
+			w.WriteHeader(final)
+			if final != http.StatusOK {
+				_, _ = io.WriteString(w, `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"id":"m","type":"message","role":"assistant","model":"claude-opus-5-5","stop_reason":"end_turn",
+				"content":[{"type":"text","text":"{\"recipes\":[{\"title\":\"Dal\"}]}"}],"usage":{"input_tokens":100,"output_tokens":5}}`)
+		}))
+		defer srv.Close()
+		cl := NewClaude(Config{APIKey: "test"})
+		cl.client = anthropic.NewClient(option.WithAPIKey("test"), option.WithBaseURL(srv.URL), option.WithMaxRetries(1))
+		_, usage, err := cl.SearchRecipes(context.Background(), model.RecipeQuery{Query: "dal"})
+		return usage, calls, err
+	}
+
+	usage, calls, err := run(http.StatusTooManyRequests)
+	if calls != 2 || err == nil || IsNotBilled(err) || !usage.Incomplete {
+		t.Errorf("500 then 429: calls=%d err=%v notBilled=%v usage=%+v", calls, err, IsNotBilled(err), usage)
+	}
+
+	usage, calls, err = run(http.StatusOK)
+	if calls != 2 || err != nil || !usage.Incomplete || usage.Requests != 1 || usage.InputTokens != 100 {
+		t.Errorf("500 then 200: calls=%d err=%v usage=%+v", calls, err, usage)
+	}
+}
+
+func TestDemoUsageIsZero(t *testing.T) {
+	d := NewDemo()
+	d.Delay = 0
+	_, usage, err := d.SearchRecipes(context.Background(), model.RecipeQuery{Query: "dal", MaxRecipes: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.Provider != "demo" || usage.Requests != 0 || usage.TotalTokens() != 0 || usage.WebSearches != 0 {
+		t.Errorf("demo usage = %+v", usage)
 	}
 }
