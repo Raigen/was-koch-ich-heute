@@ -13,6 +13,7 @@
   --error-bg: #fde8e8;
   --error-text: #8a1c1c;
   --promo: #c2410c;
+  --star: #b7791f;
   --radius: 12px;
   --shadow: 0 1px 2px rgb(0 0 0 / 0.05), 0 4px 12px rgb(0 0 0 / 0.04);
   font-family: "Inter", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -36,6 +37,7 @@
     --error-bg: #3d1d1d;
     --error-text: #f5b1b1;
     --promo: #fb923c;
+    --star: #f6c453;
   }
 }
 
@@ -69,8 +71,8 @@ p.error { padding: 6px 10px; }
 
 .search-main { display: flex; gap: 10px; }
 .search-input { flex: 1; font-size: 1.05rem; padding: 12px 14px; }
-input, select { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; min-width: 0; }
-input:focus, select:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+input, select, textarea { font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; min-width: 0; }
+input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 .field { display: flex; flex-direction: column; gap: 4px; font-size: 0.85rem; color: var(--muted); }
 .field input, .field select { width: 140px; }
 .field.grow { flex: 1; min-width: 180px; }
@@ -148,12 +150,43 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .spinner.small { width: 11px; height: 11px; }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* Merkliste (favorites) */
+.tabs { display: flex; gap: 4px; margin-bottom: 12px; border-bottom: 1px solid var(--border); }
+.tabs button { background: none; border: 0; border-bottom: 3px solid transparent; color: var(--muted); padding: 8px 14px; font-weight: 600; margin-bottom: -1px; }
+.tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+.tabs button:hover { color: var(--text); }
+
+.btn-fav { background: var(--surface); color: var(--text); border: 1px solid var(--border); border-radius: 999px; padding: 4px 12px; font-size: 0.88rem; white-space: nowrap; }
+.btn-fav span { color: var(--star); }
+.btn-fav.on { border-color: var(--star); background: color-mix(in srgb, var(--star) 14%, var(--surface)); font-weight: 600; }
+.card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
+.detail-actions { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; }
+
+.field.note { margin-bottom: 16px; }
+.field.note textarea { width: 100%; resize: vertical; }
+
+.favorite-card .fav-note { flex: 0; font-style: italic; }
+.fav-price { background: var(--surface-2); border-radius: 8px; padding: 8px 10px; margin-bottom: 12px; font-size: 0.92rem; }
+.fav-price strong { font-variant-numeric: tabular-nums; }
+.favorite-card .card-actions .btn-secondary { margin-top: 0; }
+.fav-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 12px; }
+.fav-foot .btn-link { margin: 0; font-size: inherit; }
+
+.shopping-list { margin-top: 24px; }
+.shopping-head, .shopping-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
+.shopping-group h4 { margin: 12px 0 2px; font-size: 0.92rem; padding-left: 8px; border-left: 4px solid var(--store); }
+.shopping-foot { margin-top: 12px; }
+.shopping-foot strong { font-variant-numeric: tabular-nums; }
+.shopping-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+.shopping-actions .btn-secondary { margin-top: 0; }
+
 .footer { margin-top: 40px; font-size: 0.8rem; color: var(--muted); text-align: center; }
 
 @media (max-width: 720px) {
   .search-main { flex-direction: column; }
   .detail-grid { grid-template-columns: 1fr; }
   .detail-head { flex-direction: column; }
+  .detail-actions { align-items: flex-start; }
   .app-header { flex-direction: column; }
   .field input, .field select { width: 100%; }
   .field { flex: 1 1 140px; }

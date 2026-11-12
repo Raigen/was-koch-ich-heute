@@ -1,6 +1,8 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { comparePrices } from "../api";
-import { formatEur, formatQty } from "../format";
+import type { SavedPriceCheck } from "../favorites";
+import { formatDateTime, formatEur, formatQty } from "../format";
+import { shoppingListText } from "../shoppingList";
 import type { Comparison, Ingredient, Offer, Store, StorePrices } from "../types";
 
 interface Props {
@@ -8,27 +10,44 @@ interface Props {
   stores: Store[];
   allStores: Store[];
   postalCode: string;
+  /** Shows a stored comparison instead of starting a new one. */
+  saved?: SavedPriceCheck;
+  /** Called once all shops are done, with the results of every shop. */
+  onComplete?: (results: StorePrices[], comparison: Comparison) => void;
 }
 
 const key = (s: string) => s.trim().toLowerCase();
 
-export default function PriceComparison({ ingredients, stores, allStores, postalCode }: Props) {
-  const [results, setResults] = useState<Record<string, StorePrices>>({});
-  const [comparison, setComparison] = useState<Comparison | null>(null);
+const byStore = (list: StorePrices[]) => Object.fromEntries(list.map((sp) => [sp.storeId, sp]));
+
+export default function PriceComparison({ ingredients, stores, allStores, postalCode, saved, onComplete }: Props) {
+  const [results, setResults] = useState<Record<string, StorePrices>>(() => (saved ? byStore(saved.results) : {}));
+  const [comparison, setComparison] = useState<Comparison | null>(saved?.comparison ?? null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
   const [attempt, setAttempt] = useState(0);
+  // The stream callback outlives renders: read the latest results and callback via refs.
+  const resultsRef = useRef(results);
+  resultsRef.current = results;
+  const onCompleteRef = useRef(onComplete);
+  onCompleteRef.current = onComplete;
 
   useEffect(() => {
+    if (saved) return;
     const ctrl = new AbortController();
+    let collected = { ...resultsRef.current };
     comparePrices(
       ingredients,
       stores.map((s) => s.id),
       postalCode,
       (ev) => {
-        if (ev.type === "store") setResults((r) => ({ ...r, [ev.store.storeId]: ev.store }));
-        else if (ev.type === "summary") setComparison(ev.comparison);
-        else if (ev.type === "error") setError(ev.message);
+        if (ev.type === "store") {
+          collected = { ...collected, [ev.store.storeId]: ev.store };
+          setResults((r) => ({ ...r, [ev.store.storeId]: ev.store }));
+        } else if (ev.type === "summary") {
+          setComparison(ev.comparison);
+          onCompleteRef.current?.(Object.values(collected), ev.comparison);
+        } else if (ev.type === "error") setError(ev.message);
       },
       ctrl.signal,
     ).catch((e: Error) => {
@@ -43,7 +62,9 @@ export default function PriceComparison({ ingredients, stores, allStores, postal
   // Retry: successful shops come from the backend cache (no AI cost), only
   // the failed ones are researched again.
   function retryFailed() {
-    setResults((r) => Object.fromEntries(Object.entries(r).filter(([, sp]) => !sp.error)));
+    const ok = Object.fromEntries(Object.entries(results).filter(([, sp]) => !sp.error));
+    resultsRef.current = ok;
+    setResults(ok);
     setComparison(null);
     setError(null);
     setAttempt((a) => a + 1);
@@ -77,26 +98,10 @@ export default function PriceComparison({ ingredients, stores, allStores, postal
   const doneCount = Object.keys(results).length;
   const finished = comparison !== null;
 
-  function shoppingListText(c: Comparison): string {
-    const byStore = new Map<string, Offer[]>();
-    for (const m of c.mix) {
-      if (!m.offer) continue;
-      byStore.set(m.offer.storeId, [...(byStore.get(m.offer.storeId) ?? []), m.offer]);
-    }
-    const lines: string[] = [];
-    for (const [sid, offers] of byStore) {
-      lines.push(`${storeName(sid)}:`);
-      for (const o of offers) lines.push(`  - ${o.packagesNeeded}× ${o.productName} (${formatEur(o.cost)})`);
-    }
-    if (c.mixMissing.length) lines.push(`Nicht gefunden: ${c.mixMissing.join(", ")}`);
-    lines.push(`Summe: ${formatEur(c.mixTotal)}`);
-    return lines.join("\n");
-  }
-
   async function copyList() {
     if (!comparison) return;
     try {
-      await navigator.clipboard.writeText(shoppingListText(comparison));
+      await navigator.clipboard.writeText(shoppingListText(comparison, storeName));
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -107,6 +112,12 @@ export default function PriceComparison({ ingredients, stores, allStores, postal
   return (
     <section className="prices">
       <h3>Preisvergleich</h3>
+      {saved && (
+        <p className="muted small">
+          Gespeicherter Preisstand vom {formatDateTime(saved.comparedAt)}
+          {saved.postalCode && ` (PLZ ${saved.postalCode})`}. Preise können sich inzwischen geändert haben.
+        </p>
+      )}
 
       <div className="progress">
         {stores.map((s) => {
@@ -130,7 +141,7 @@ export default function PriceComparison({ ingredients, stores, allStores, postal
 
       {error && <div className="error">{error}</div>}
 
-      {finished && failedStores.length > 0 && (
+      {finished && failedStores.length > 0 && !saved && (
         <div className="notice retry">
           <span>
             {failedStores.length === 1 ? "1 Shop konnte" : `${failedStores.length} Shops konnten`} nicht recherchiert

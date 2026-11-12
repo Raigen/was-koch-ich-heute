@@ -3,6 +3,9 @@ const num = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 2 });
 
 export const formatEur = (v: number) => eur.format(v);
 
+const dateTime = new Intl.DateTimeFormat("de-DE", { dateStyle: "medium", timeStyle: "short" });
+export const formatDateTime = (iso: string) => dateTime.format(new Date(iso));
+
 export function formatQty(quantity: number, unit: string): string {
   if (!quantity) return unit;
   return `${num.format(quantity)} ${unit}`.trim();
