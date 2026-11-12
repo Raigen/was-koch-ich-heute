@@ -12,7 +12,7 @@ interface Props {
 }
 
 export default function RecipeDetail({ recipe, stores, allStores, postalCode, onBack }: Props) {
-  // Grundzutaten (Salz, Öl …) sind standardmäßig abgewählt.
+  // Staples (salt, oil …) are unchecked by default.
   const [buy, setBuy] = useState<boolean[]>(() => recipe.ingredients.map((i) => !i.pantry));
   const [run, setRun] = useState(0);
   const toBuy = recipe.ingredients.filter((_, i) => buy[i]);

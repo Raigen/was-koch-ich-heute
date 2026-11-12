@@ -10,10 +10,11 @@ import (
 	"github.com/raigen/was-koch-ich-heute/backend/internal/model"
 )
 
-// Demo liefert feste Beispieldaten ohne KI-Aufruf. So lässt sich die
-// Oberfläche ohne API-Key ausprobieren. Die Preise sind NICHT echt.
+// Demo returns fixed sample data without calling an AI, so the UI can be
+// tried without an API key. The prices are NOT real. Recipe and product data
+// are German because they are displayed in the German UI.
 type Demo struct {
-	// Delay simuliert die Recherchedauer pro Shop.
+	// Delay simulates the research time per shop.
 	Delay time.Duration
 }
 
@@ -30,7 +31,7 @@ func ing(name string, qty float64, unit string, pantry bool) model.Ingredient {
 	return model.Ingredient{Name: name, Quantity: qty, Unit: unit, Pantry: pantry}
 }
 
-// Alle Mengen beziehen sich auf 4 Portionen.
+// All quantities are for 4 servings.
 var demoRecipes = []demoRecipe{
 	{tags: []string{"pasta", "nudeln", "italienisch", "hackfleisch", "schnell"}, recipe: model.Recipe{
 		ID: "demo-bolognese", Title: "Spaghetti Bolognese", Description: "Klassiker mit Rinderhack und Tomaten – günstig und familientauglich.",
@@ -89,7 +90,7 @@ func (d *Demo) SearchRecipes(ctx context.Context, q model.RecipeQuery) ([]model.
 		}
 		list = append(list, scored{scaleRecipe(dr.recipe, q.Servings), s})
 	}
-	// Stabil nach Treffern sortieren (einfaches Insertion Sort).
+	// Stable sort by number of matches (simple insertion sort).
 	for i := 1; i < len(list); i++ {
 		for j := i; j > 0 && list[j].score > list[j-1].score; j-- {
 			list[j], list[j-1] = list[j-1], list[j]
@@ -170,7 +171,7 @@ func (d *Demo) FindPrices(ctx context.Context, store model.Store, ingredients []
 	res := model.StorePrices{StoreID: store.ID}
 	for _, in := range ingredients {
 		p, ok := demoCatalog[strings.ToLower(in.Name)]
-		// Jeder Shop "findet" ein paar Zutaten nicht, damit die Oberfläche das zeigt.
+		// Every shop "misses" a few ingredients so the UI can show that case.
 		if !ok || hash(store.ID+in.Name)%11 == 0 {
 			res.NotFound = append(res.NotFound, in.Name)
 			continue

@@ -35,13 +35,13 @@ export default function PriceComparison({ ingredients, stores, allStores, postal
       if (e.name !== "AbortError") setError(e.message);
     });
     return () => ctrl.abort();
-    // Neustart nur über "attempt" (erneuter Versuch) bzw. key in RecipeDetail.
+    // Restarts only via "attempt" (retry) or the key set in RecipeDetail.
   }, [attempt]);
 
   const failedStores = Object.values(results).filter((r) => r.error);
 
-  // Erneuter Versuch: Erfolgreiche Shops kommen aus dem Backend-Cache (ohne
-  // KI-Kosten), nur die fehlgeschlagenen werden neu recherchiert.
+  // Retry: successful shops come from the backend cache (no AI cost), only
+  // the failed ones are researched again.
   function retryFailed() {
     setResults((r) => Object.fromEntries(Object.entries(r).filter(([, sp]) => !sp.error)));
     setComparison(null);
@@ -52,7 +52,7 @@ export default function PriceComparison({ ingredients, stores, allStores, postal
   const storeName = (id: string) => allStores.find((s) => s.id === id)?.name ?? id;
   const storeColor = (id: string) => allStores.find((s) => s.id === id)?.color ?? "#888";
 
-  // Günstigstes Angebot je Zutat und Shop – wird schon während des Streamings angezeigt.
+  // Cheapest offer per ingredient and shop, shown while results are still streaming.
   const cells = useMemo(() => {
     const m = new Map<string, Offer>();
     for (const sp of Object.values(results)) {

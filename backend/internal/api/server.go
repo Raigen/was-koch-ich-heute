@@ -1,4 +1,7 @@
-// Package api stellt die HTTP-Schnittstelle für das React-Frontend bereit.
+// Package api provides the HTTP interface for the React frontend.
+//
+// Error messages returned to the client are shown in the German UI and are
+// therefore German; logs are English.
 package api
 
 import (
@@ -22,7 +25,7 @@ import (
 	"github.com/raigen/was-koch-ich-heute/backend/internal/research"
 )
 
-// Server bündelt Researcher, Cache und Routen.
+// Server bundles researcher, cache and routes.
 type Server struct {
 	researcher  research.Researcher
 	cache       *ttlCache
@@ -31,23 +34,23 @@ type Server struct {
 	recipeTTL   time.Duration
 	priceTTL    time.Duration
 	callTimeout time.Duration
-	// storeTimeout begrenzt die Recherche eines einzelnen Shops, damit ein
-	// hängender Shop nicht den ganzen Vergleich aufhält.
+	// storeTimeout limits the research of a single shop so that a hanging shop
+	// does not hold up the whole comparison.
 	storeTimeout time.Duration
-	// heartbeat ist der Abstand der "ping"-Zeilen im Preis-Stream. Sie halten
-	// die Verbindung durch Reverse-Proxys (nginx: 60 s Standard) offen.
+	// heartbeat is the interval of "ping" lines in the price stream. They keep
+	// the connection open through reverse proxies (nginx default: 60 s).
 	heartbeat time.Duration
 }
 
-// Options konfiguriert den Server.
+// Options configures the server.
 type Options struct {
-	// StaticDir ist das Build-Verzeichnis des Frontends (optional).
+	// StaticDir is the frontend build directory (optional).
 	StaticDir string
-	// Parallel begrenzt gleichzeitige Shop-Recherchen.
+	// Parallel limits concurrent shop research.
 	Parallel int
-	// StoreTimeout ist die maximale Recherchedauer pro Shop (Standard 3 min).
+	// StoreTimeout is the maximum research time per shop (default 3 min).
 	StoreTimeout time.Duration
-	// Heartbeat ist der Abstand der Lebenszeichen im Stream (Standard 15 s).
+	// Heartbeat is the interval of keep-alive lines in the stream (default 15 s).
 	Heartbeat time.Duration
 }
 
@@ -74,7 +77,7 @@ func New(r research.Researcher, opts Options) *Server {
 	}
 }
 
-// Handler liefert den HTTP-Handler mit allen Routen.
+// Handler returns the HTTP handler with all routes.
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
@@ -129,7 +132,7 @@ func (s *Server) handleRecipeSearch(w http.ResponseWriter, r *http.Request) {
 	defer cancel()
 	recipes, err := s.researcher.SearchRecipes(ctx, q)
 	if err != nil {
-		slog.Error("Rezeptsuche fehlgeschlagen", "err", err)
+		slog.Error("recipe search failed", "err", err)
 		writeError(w, http.StatusBadGateway, err.Error())
 		return
 	}
@@ -145,7 +148,7 @@ func (s *Server) handleRecipeSearch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"recipes": recipes, "cached": false})
 }
 
-// priceEvent ist eine Zeile im NDJSON-Stream von /api/prices/compare.
+// priceEvent is one line in the NDJSON stream of /api/prices/compare.
 type priceEvent struct {
 	Type       string             `json:"type"` // "store" | "summary" | "error" | "ping"
 	Store      *model.StorePrices `json:"store,omitempty"`
@@ -153,9 +156,9 @@ type priceEvent struct {
 	Message    string             `json:"message,omitempty"`
 }
 
-// handlePriceCompare recherchiert die Preise parallel in allen gewählten
-// Shops und streamt jedes Ergebnis als NDJSON-Zeile, sobald es vorliegt.
-// Zum Schluss folgt eine Zusammenfassung mit dem Preisvergleich.
+// handlePriceCompare researches prices in all selected shops in parallel and
+// streams each result as an NDJSON line as soon as it is ready, followed by a
+// summary with the price comparison.
 func (s *Server) handlePriceCompare(w http.ResponseWriter, r *http.Request) {
 	var req model.PriceRequest
 	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 64<<10)).Decode(&req); err != nil {
@@ -200,7 +203,7 @@ func (s *Server) handlePriceCompare(w http.ResponseWriter, r *http.Request) {
 
 	enc := json.NewEncoder(w)
 	var writeMu sync.Mutex
-	finished := false // nach Ende des Handlers darf nicht mehr geschrieben werden
+	finished := false // no writes after the handler has returned
 	emit := func(ev priceEvent) {
 		writeMu.Lock()
 		defer writeMu.Unlock()
@@ -213,7 +216,7 @@ func (s *Server) handlePriceCompare(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Lebenszeichen senden, solange recherchiert wird.
+	// Send keep-alive lines while research is running.
 	done := make(chan struct{})
 	defer func() {
 		close(done)
@@ -254,9 +257,9 @@ func (s *Server) handlePriceCompare(w http.ResponseWriter, r *http.Request) {
 	emit(priceEvent{Type: "summary", Comparison: &cmp})
 }
 
-// storePrices liefert die Preise eines Shops aus dem Cache oder recherchiert
-// sie mit eigenem Zeitlimit. Gecachte Ergebnisse warten nicht auf einen
-// freien Recherche-Platz; so kommen sie bei einem erneuten Versuch sofort.
+// storePrices returns a shop's prices from the cache or researches them with
+// their own time limit. Cached results do not wait for a free research slot,
+// so they come back instantly on a retry.
 func (s *Server) storePrices(ctx context.Context, sem chan struct{}, st model.Store, ingredients []model.Ingredient, plz string) model.StorePrices {
 	cacheKey := "prices:" + hashKey(struct {
 		S string
@@ -283,11 +286,11 @@ func (s *Server) storePrices(ctx context.Context, sem chan struct{}, st model.St
 		sp.StoreID = st.ID
 		switch {
 		case err != nil && errors.Is(storeCtx.Err(), context.DeadlineExceeded):
-			slog.Warn("Preisrecherche: Zeitüberschreitung", "store", st.ID, "limit", s.storeTimeout)
+			slog.Warn("price research timed out", "store", st.ID, "limit", s.storeTimeout)
 			sp.Error = fmt.Sprintf("Zeitüberschreitung: keine Antwort nach %s", formatDuration(s.storeTimeout))
 			sp.TimedOut = true
 		case err != nil:
-			slog.Error("Preisrecherche fehlgeschlagen", "store", st.ID, "err", err)
+			slog.Error("price research failed", "store", st.ID, "err", err)
 			sp.Error = err.Error()
 		default:
 			pricing.Enrich(&sp, ingredients)
@@ -314,7 +317,7 @@ func formatDuration(d time.Duration) string {
 }
 
 // ---------------------------------------------------------------------------
-// Hilfsfunktionen
+// Helpers
 
 func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -337,13 +340,13 @@ func logRequests(next http.Handler) http.Handler {
 		start := time.Now()
 		next.ServeHTTP(w, r)
 		if strings.HasPrefix(r.URL.Path, "/api/") {
-			slog.Info("request", "method", r.Method, "path", r.URL.Path, "dauer", time.Since(start).Round(time.Millisecond))
+			slog.Info("request", "method", r.Method, "path", r.URL.Path, "duration", time.Since(start).Round(time.Millisecond))
 		}
 	})
 }
 
-// spaHandler liefert Dateien aus dir aus und fällt für unbekannte Pfade auf
-// index.html zurück, damit clientseitiges Routing funktioniert.
+// spaHandler serves files from dir and falls back to index.html for unknown
+// paths so that client-side routing works.
 func spaHandler(dir string) http.Handler {
 	fs := http.FileServer(http.Dir(dir))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -357,7 +360,7 @@ func spaHandler(dir string) http.Handler {
 }
 
 // ---------------------------------------------------------------------------
-// Einfacher In-Memory-Cache mit Ablaufzeit, um teure KI-Recherchen zu sparen.
+// Simple in-memory cache with expiry to avoid repeating expensive AI research.
 
 type cacheEntry struct {
 	value   any
@@ -386,7 +389,7 @@ func (c *ttlCache) set(k string, v any, ttl time.Duration) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if len(c.items) > 1000 {
-		// Grob aufräumen: abgelaufene zuerst, sonst die ältesten.
+		// Rough cleanup: drop the half that expires soonest.
 		keys := make([]string, 0, len(c.items))
 		for key := range c.items {
 			keys = append(keys, key)

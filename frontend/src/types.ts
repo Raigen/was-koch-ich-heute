@@ -1,4 +1,4 @@
-// Spiegelt die Typen aus backend/internal/model/model.go.
+// Mirrors the types in backend/internal/model/model.go. Keep both in sync.
 
 export interface Store {
   id: string;
@@ -87,5 +87,5 @@ export type PriceEvent =
   | { type: "store"; store: StorePrices }
   | { type: "summary"; comparison: Comparison }
   | { type: "error"; message: string }
-  // Lebenszeichen des Backends, damit Proxys die Verbindung offen halten.
+  // Backend keep-alive so that proxies keep the connection open.
   | { type: "ping" };

@@ -11,21 +11,21 @@ import (
 	"github.com/raigen/was-koch-ich-heute/backend/internal/model"
 )
 
-// TestMistralFindPrices prüft gegen einen Fake-Server das Request-Format der
-// Conversations API, das Lesen von String- und Chunk-Inhalten sowie das
-// Verwerfen von Links auf fremde Domains.
+// TestMistralFindPrices checks against a fake server: the Conversations API
+// request format, parsing chunked content, retrying and dropping links to
+// foreign domains.
 func TestMistralFindPrices(t *testing.T) {
 	var got map[string]any
 	var auth string
 	calls := 0
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls++
-		if calls == 1 { // erster Versuch: Serverfehler -> Retry
+		if calls == 1 { // first attempt: server error -> retry
 			w.WriteHeader(http.StatusServiceUnavailable)
 			return
 		}
 		if r.URL.Path != "/v1/conversations" {
-			t.Errorf("Pfad %s", r.URL.Path)
+			t.Errorf("path %s", r.URL.Path)
 		}
 		auth = r.Header.Get("Authorization")
 		raw, _ := io.ReadAll(r.Body)
@@ -34,7 +34,7 @@ func TestMistralFindPrices(t *testing.T) {
 		_, _ = io.WriteString(w, `{"object":"conversation.response","conversation_id":"conv_1","outputs":[
 		  {"object":"entry","type":"tool.execution","name":"web_search"},
 		  {"object":"entry","type":"message.output","role":"assistant","content":[
-		    {"type":"text","text":"Gefunden:\n`+"```json"+`\n{\"offers\":[{\"ingredient\":\"Reis\",\"productName\":\"ja! Langkornreis\",\"price\":1.29,"},
+		    {"type":"text","text":"Found:\n`+"```json"+`\n{\"offers\":[{\"ingredient\":\"Reis\",\"productName\":\"ja! Langkornreis\",\"price\":1.29,"},
 		    {"type":"tool_reference","tool":"web_search","title":"REWE","url":"https://shop.rewe.de/p/reis"},
 		    {"type":"text","text":"\"packageAmount\":1,\"packageUnit\":\"kg\",\"url\":\"https://shop.rewe.de/p/reis\",\"confidence\":\"hoch\"},{\"ingredient\":\"Milch\",\"productName\":\"Milch\",\"price\":0.99,\"url\":\"https://preisvergleich.example/milch\",\"confidence\":\"hoch\"}],\"notFound\":[]}\n`+"```"+`"}
 		  ]}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`)
@@ -49,13 +49,13 @@ func TestMistralFindPrices(t *testing.T) {
 		t.Fatal(err)
 	}
 	if calls != 2 {
-		t.Errorf("erwartet 2 Aufrufe (1 Retry), bekommen %d", calls)
+		t.Errorf("expected 2 calls (1 retry), got %d", calls)
 	}
 	if auth != "Bearer key" {
 		t.Errorf("Authorization = %q", auth)
 	}
 	if got["model"] != "mistral-medium-latest" || got["store"] != false || got["stream"] != false || got["instructions"] == "" {
-		t.Errorf("Request falsch: %v", got)
+		t.Errorf("wrong request: %v", got)
 	}
 	if tools := got["tools"].([]any); tools[0].(map[string]any)["type"] != "web_search" {
 		t.Errorf("tools = %v", tools)
@@ -64,10 +64,10 @@ func TestMistralFindPrices(t *testing.T) {
 		t.Errorf("completion_args = %v", ca)
 	}
 	if len(sp.Offers) != 2 || sp.Offers[0].Price != 1.29 || sp.Offers[0].URL == "" {
-		t.Fatalf("Angebote falsch: %+v", sp.Offers)
+		t.Fatalf("wrong offers: %+v", sp.Offers)
 	}
 	if sp.Offers[1].URL != "" || sp.Offers[1].Confidence != "mittel" {
-		t.Errorf("fremde Domain hätte verworfen werden müssen: %+v", sp.Offers[1])
+		t.Errorf("foreign domain should have been dropped: %+v", sp.Offers[1])
 	}
 }
 
@@ -102,7 +102,7 @@ func TestNewProviderSelection(t *testing.T) {
 		}
 	}
 	if _, err := New(Config{Provider: "mistral"}); err == nil {
-		t.Error("Fehler ohne MISTRAL_API_KEY erwartet")
+		t.Error("expected an error without MISTRAL_API_KEY")
 	}
 }
 

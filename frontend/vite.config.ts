@@ -1,7 +1,7 @@
 import { defineConfig } from "vite";
 import react from "@vitejs/plugin-react";
 
-// Im Dev-Modus leitet Vite alle /api-Aufrufe an das Go-Backend weiter.
+// In dev mode, Vite proxies all /api calls to the Go backend.
 export default defineConfig({
   plugins: [react()],
   server: {

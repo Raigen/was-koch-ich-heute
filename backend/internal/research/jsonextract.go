@@ -6,9 +6,11 @@ import (
 	"strings"
 )
 
-// extractJSON sucht im Antworttext des Modells ein JSON-Objekt und dekodiert
-// es in out. Bevorzugt wird der letzte ```json-Block, ansonsten der Bereich
-// von der ersten öffnenden bis zur letzten schließenden geschweiften Klammer.
+// extractJSON finds a JSON object in the model's answer and decodes it into
+// out. It prefers the last ```json block, otherwise the range from the first
+// opening to the last closing curly brace.
+//
+// The error text is shown in the (German) UI, hence German.
 func extractJSON(text string, out any) error {
 	candidates := []string{}
 	if i := strings.LastIndex(text, "```json"); i >= 0 {

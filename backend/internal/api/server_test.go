@@ -35,12 +35,12 @@ func TestRecipeSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(out.Recipes) == 0 || out.Recipes[0].ID != "demo-dal" || out.Recipes[0].Servings != 2 {
-		t.Fatalf("unerwartete Rezepte: %+v", out.Recipes)
+		t.Fatalf("unexpected recipes: %+v", out.Recipes)
 	}
 
 	resp2, _ := http.Post(ts.URL+"/api/recipes/search", "application/json", strings.NewReader(`{"query":"  "}`))
 	if resp2.StatusCode != http.StatusBadRequest {
-		t.Errorf("leere Suche: Status %d, erwartet 400", resp2.StatusCode)
+		t.Errorf("empty query: status %d, want 400", resp2.StatusCode)
 	}
 }
 
@@ -48,7 +48,7 @@ func TestPriceCompareStream(t *testing.T) {
 	ts := newTestServer()
 	defer ts.Close()
 
-	body := `{"ingredients":[{"name":"Spaghetti","quantity":500,"unit":"g"},{"name":"Zwiebel","quantity":2,"unit":"Stück"}],"storeIds":["rewe","aldi-sued","gibtsnicht"],"postalCode":"10115"}`
+	body := `{"ingredients":[{"name":"Spaghetti","quantity":500,"unit":"g"},{"name":"Zwiebel","quantity":2,"unit":"Stück"}],"storeIds":["rewe","aldi-sued","does-not-exist"],"postalCode":"10115"}`
 	resp, err := http.Post(ts.URL+"/api/prices/compare", "application/json", strings.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
@@ -61,7 +61,7 @@ func TestPriceCompareStream(t *testing.T) {
 	for sc.Scan() {
 		var ev priceEvent
 		if err := json.Unmarshal(sc.Bytes(), &ev); err != nil {
-			t.Fatalf("ungültige NDJSON-Zeile %q: %v", sc.Text(), err)
+			t.Fatalf("invalid NDJSON line %q: %v", sc.Text(), err)
 		}
 		switch ev.Type {
 		case "store":
@@ -75,11 +75,11 @@ func TestPriceCompareStream(t *testing.T) {
 		t.Fatalf("stores=%d summaries=%d last=%s", stores, summaries, last.Type)
 	}
 	if len(last.Comparison.StoreTotals) != 2 || last.Comparison.MixTotal <= 0 {
-		t.Errorf("unerwarteter Vergleich: %+v", last.Comparison)
+		t.Errorf("unexpected comparison: %+v", last.Comparison)
 	}
 }
 
-// slowResearcher hängt bei einem Shop, bis der Kontext abläuft, und zählt Aufrufe.
+// slowResearcher hangs for one shop until the context expires and counts calls.
 type slowResearcher struct {
 	research.Demo
 	slowStore string
@@ -129,18 +129,18 @@ func TestPriceCompareTimeoutHeartbeatAndRetry(t *testing.T) {
 
 	stores, pings := run()
 	if !stores["edeka"].TimedOut || !strings.Contains(stores["edeka"].Error, "Zeitüberschreitung") {
-		t.Errorf("edeka sollte Zeitüberschreitung melden: %+v", stores["edeka"])
+		t.Errorf("edeka should report a timeout: %+v", stores["edeka"])
 	}
 	if stores["rewe"].Error != "" || len(stores["rewe"].Offers) == 0 {
-		t.Errorf("rewe sollte trotzdem Ergebnisse liefern: %+v", stores["rewe"])
+		t.Errorf("rewe should still return results: %+v", stores["rewe"])
 	}
 	if pings < 2 {
-		t.Errorf("erwartet Lebenszeichen im Stream, bekommen %d", pings)
+		t.Errorf("expected keep-alive pings in the stream, got %d", pings)
 	}
 
-	// Erneuter Versuch: rewe kommt aus dem Cache, nur edeka wird neu recherchiert.
+	// Retry: rewe comes from the cache, only edeka is researched again.
 	stores, _ = run()
 	if !stores["rewe"].Cached || r.calls["rewe"] != 1 || r.calls["edeka"] != 2 {
-		t.Errorf("Retry: rewe cached=%v, Aufrufe=%v", stores["rewe"].Cached, r.calls)
+		t.Errorf("retry: rewe cached=%v, calls=%v", stores["rewe"].Cached, r.calls)
 	}
 }

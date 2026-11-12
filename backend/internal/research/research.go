@@ -1,5 +1,4 @@
-// Package research kapselt die KI-gestützte Web-Recherche hinter einer
-// austauschbaren Schnittstelle.
+// Package research wraps AI-powered web research behind a pluggable interface.
 package research
 
 import (
@@ -10,21 +9,21 @@ import (
 	"github.com/raigen/was-koch-ich-heute/backend/internal/model"
 )
 
-// Researcher ist die Schnittstelle, die jeder KI-Anbieter implementiert.
-// Neue Anbieter (z. B. ein anderes LLM oder ein lokales Modell) müssen nur
-// diese beiden Methoden bereitstellen und in New registriert werden.
+// Researcher is the interface every AI provider implements. A new provider
+// (another LLM, a local model, …) only has to provide these methods and be
+// registered in New.
 type Researcher interface {
-	// Name liefert einen kurzen Anzeigenamen des Anbieters.
+	// Name returns a short display name of the provider.
 	Name() string
-	// SearchRecipes recherchiert passende Rezepte im Web.
+	// SearchRecipes researches matching recipes on the web.
 	SearchRecipes(ctx context.Context, q model.RecipeQuery) ([]model.Recipe, error)
-	// FindPrices sucht die Zutaten im Online-Angebot eines Shops.
+	// FindPrices looks up the ingredients in a shop's online assortment.
 	FindPrices(ctx context.Context, store model.Store, ingredients []model.Ingredient, postalCode string) (model.StorePrices, error)
 }
 
-// Config steuert, welcher Anbieter verwendet wird.
+// Config selects and configures the provider.
 type Config struct {
-	Provider string // "claude", "mistral", "demo" oder leer (automatisch)
+	Provider string // "claude", "mistral", "demo" or empty (automatic)
 
 	// Claude (Anthropic)
 	APIKey string
@@ -34,14 +33,14 @@ type Config struct {
 	// Mistral
 	MistralAPIKey          string
 	MistralModel           string
-	MistralBaseURL         string // z. B. https://api.eu.mistral.ai
+	MistralBaseURL         string // e.g. https://api.eu.mistral.ai
 	MistralReasoningEffort string
-	MistralWebSearch       string // "standard" oder "premium"
+	MistralWebSearch       string // "standard" or "premium"
 }
 
-// New erzeugt den konfigurierten Researcher. Ohne Anbieterangabe wird der
-// erste Anbieter mit gesetztem API-Key gewählt (Claude, dann Mistral),
-// sonst der Demo-Modus.
+// New creates the configured Researcher. Without an explicit provider, the
+// first provider with an API key is used (Claude, then Mistral), otherwise
+// demo mode.
 func New(cfg Config) (Researcher, error) {
 	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
 	if provider == "" {
@@ -59,17 +58,17 @@ func New(cfg Config) (Researcher, error) {
 		return NewClaude(cfg), nil
 	case "mistral":
 		if cfg.MistralAPIKey == "" {
-			return nil, fmt.Errorf("AI_PROVIDER=mistral benötigt MISTRAL_API_KEY")
+			return nil, fmt.Errorf("AI_PROVIDER=mistral requires MISTRAL_API_KEY")
 		}
 		return NewMistral(cfg), nil
 	case "demo", "mock":
 		return NewDemo(), nil
 	default:
-		return nil, fmt.Errorf("unbekannter KI-Anbieter %q (erlaubt: claude, mistral, demo)", cfg.Provider)
+		return nil, fmt.Errorf("unknown AI provider %q (allowed: claude, mistral, demo)", cfg.Provider)
 	}
 }
 
-// Stores ist die Liste der unterstützten Händler.
+// Stores is the list of supported retailers.
 var Stores = []model.Store{
 	{ID: "rewe", Name: "REWE", Domains: []string{"rewe.de", "shop.rewe.de"}, Color: "#cc071e"},
 	{ID: "edeka", Name: "EDEKA", Domains: []string{"edeka.de", "edeka24.de"}, Color: "#1a4b9b"},
@@ -80,7 +79,7 @@ var Stores = []model.Store{
 	{ID: "kaufland", Name: "Kaufland", Domains: []string{"kaufland.de"}, Color: "#e10915"},
 }
 
-// StoreByID sucht einen Händler anhand seiner ID.
+// StoreByID looks up a retailer by its ID.
 func StoreByID(id string) (model.Store, bool) {
 	for _, s := range Stores {
 		if s.ID == id {

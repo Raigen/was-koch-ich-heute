@@ -19,7 +19,7 @@ func TestPackagesNeeded(t *testing.T) {
 		{model.Ingredient{Quantity: 500, Unit: "ml"}, 1, "l", 0, 1},
 		{model.Ingredient{Quantity: 4, Unit: "Stück"}, 6, "Stk", 0, 1},
 		{model.Ingredient{Quantity: 2, Unit: "Dose"}, 1, "Dose", 0, 2},
-		{model.Ingredient{Quantity: 2, Unit: "Zehe"}, 3, "Stück", 3, 3}, // unvergleichbar -> KI-Wert
+		{model.Ingredient{Quantity: 2, Unit: "Zehe"}, 3, "Stück", 3, 3}, // not comparable -> AI value
 		{model.Ingredient{Quantity: 0, Unit: ""}, 500, "g", 0, 1},
 	}
 	for _, c := range cases {
@@ -48,13 +48,13 @@ func TestCompare(t *testing.T) {
 	if cmp.CheapestStoreID != "a" {
 		t.Fatalf("CheapestStoreID = %q, want a", cmp.CheapestStoreID)
 	}
-	if got := cmp.StoreTotals[0].Total; got != 1.90 { // 1.00 + 0.90 (1 kg schlägt 2×400 g)
+	if got := cmp.StoreTotals[0].Total; got != 1.90 { // 1.00 + 0.90 (1 kg beats 2×400 g)
 		t.Errorf("Total a = %v, want 1.90", got)
 	}
-	if cmp.MixTotal != 1.70 { // 0.80 bei b + 0.90 bei a
+	if cmp.MixTotal != 1.70 { // 0.80 at b + 0.90 at a
 		t.Errorf("MixTotal = %v, want 1.70", cmp.MixTotal)
 	}
 	if len(cmp.StoreTotals) != 2 || len(cmp.StoreTotals[1].Missing) != 1 {
-		t.Errorf("unerwartete StoreTotals: %+v", cmp.StoreTotals)
+		t.Errorf("unexpected StoreTotals: %+v", cmp.StoreTotals)
 	}
 }

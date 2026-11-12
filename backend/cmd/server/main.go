@@ -1,4 +1,4 @@
-// Befehl server startet das Go-Backend von „Was koch ich heute?“.
+// Command server starts the Go backend of "Was koch ich heute?".
 package main
 
 import (
@@ -30,14 +30,14 @@ func main() {
 		MistralWebSearch:       os.Getenv("MISTRAL_WEB_SEARCH"),
 	})
 	if err != nil {
-		slog.Error("Konfiguration fehlerhaft", "err", err)
+		slog.Error("invalid configuration", "err", err)
 		os.Exit(1)
 	}
 
 	parallel, _ := strconv.Atoi(os.Getenv("PRICE_PARALLEL"))
 	storeTimeout, err := parseDuration(os.Getenv("STORE_TIMEOUT"))
 	if err != nil {
-		slog.Error("STORE_TIMEOUT ungültig (Beispiel: 3m, 90s)", "err", err)
+		slog.Error("invalid STORE_TIMEOUT (example: 3m, 90s)", "err", err)
 		os.Exit(1)
 	}
 	srv := api.New(researcher, api.Options{
@@ -54,13 +54,13 @@ func main() {
 		Addr:              addr,
 		Handler:           srv.Handler(),
 		ReadHeaderTimeout: 10 * time.Second,
-		// Kein WriteTimeout: Preisrecherchen werden über mehrere Minuten gestreamt.
+		// No WriteTimeout: price research is streamed over several minutes.
 	}
 
 	go func() {
-		slog.Info("Server läuft", "addr", addr, "ki", researcher.Name())
+		slog.Info("server listening", "addr", addr, "ai", researcher.Name())
 		if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			slog.Error("Server-Fehler", "err", err)
+			slog.Error("server error", "err", err)
 			os.Exit(1)
 		}
 	}()

@@ -1,6 +1,6 @@
 .PHONY: dev backend frontend build test docker docker-up
 
-# Backend (Port 8080) und Vite-Dev-Server (Port 5173) parallel starten
+# Start the backend (port 8080) and the Vite dev server (port 5173) in parallel
 dev:
 	@$(MAKE) -j2 backend frontend
 
@@ -10,17 +10,17 @@ backend:
 frontend:
 	cd frontend && npm install && npm run dev
 
-# Ein einzelnes Binary bauen, das auch das Frontend ausliefert
+# Build a single binary that also serves the frontend
 build:
 	cd frontend && npm ci && npm run build
 	cd backend && go build -o ../bin/server ./cmd/server
-	@echo "Start: STATIC_DIR=frontend/dist ./bin/server"
+	@echo "Run: STATIC_DIR=frontend/dist ./bin/server"
 
 test:
 	cd backend && go test ./...
 	cd frontend && npm run typecheck
 
-# Docker-Image bauen bzw. mit docker compose starten
+# Build the Docker image / start with docker compose
 docker:
 	docker build --network host -t was-koch-ich-heute .
 
