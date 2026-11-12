@@ -13,6 +13,25 @@ die Preise – pro Shop und als günstigster Mix über alle Shops.
 
 ## Schnellstart
 
+### Mit Docker (kein Go/Node nötig)
+
+```bash
+cp .env.example .env   # API-Key eintragen; ohne Key: Demo-Modus
+docker compose up -d --build
+```
+
+Dann <http://localhost:8080> öffnen. Ohne Compose:
+
+```bash
+docker build -t was-koch-ich-heute .
+docker run -d -p 8080:8080 --env-file .env --name was-koch-ich-heute was-koch-ich-heute
+```
+
+Das Image wird in drei Stufen gebaut (Node baut das Frontend, Go das Backend) und enthält am Ende nur
+das statische Go-Binary plus Frontend auf `distroless` (ca. 25 MB, läuft als Nicht-root-Benutzer).
+
+### Lokal entwickeln
+
 Voraussetzungen: Go ≥ 1.25, Node.js ≥ 20.
 
 ```bash

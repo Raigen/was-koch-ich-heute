@@ -1,0 +1,12 @@
+services:
+  app:
+    build: .
+    image: was-koch-ich-heute:latest
+    ports:
+      - "8080:8080"
+    # API-Keys und Einstellungen aus .env (siehe .env.example).
+    # Ohne Key startet die App im Demo-Modus.
+    env_file:
+      - path: .env
+        required: false
+    restart: unless-stopped

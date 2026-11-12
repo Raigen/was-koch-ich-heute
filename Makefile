@@ -1,4 +1,4 @@
-.PHONY: dev backend frontend build test
+.PHONY: dev backend frontend build test docker docker-up
 
 # Backend (Port 8080) und Vite-Dev-Server (Port 5173) parallel starten
 dev:
@@ -19,3 +19,10 @@ build:
 test:
 	cd backend && go test ./...
 	cd frontend && npm run typecheck
+
+# Docker-Image bauen bzw. mit docker compose starten
+docker:
+	docker build -t was-koch-ich-heute .
+
+docker-up:
+	docker compose up -d --build
