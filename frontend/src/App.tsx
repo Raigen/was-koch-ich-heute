@@ -34,7 +34,10 @@ export default function App() {
   const [view, setView] = useState<View>("search");
   const [selected, setSelected] = useState<Selection | null>(null);
   const [favs, setFavs] = useState<Favorite[]>([]);
-  const [favError, setFavError] = useState<string | null>(null);
+  // Loading the Merkliste failed (IndexedDB unavailable): shown instead of the list.
+  const [favUnavailable, setFavUnavailable] = useState<string | null>(null);
+  // Saving, updating or removing a favorite failed.
+  const [favWriteError, setFavWriteError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -50,7 +53,7 @@ export default function App() {
     favoritesStore
       .list()
       .then(setFavs)
-      .catch((e: Error) => setFavError(e.message));
+      .catch((e: Error) => setFavUnavailable(e.message));
   }, []);
 
   useEffect(() => storageSet("stores", selectedStores), [selectedStores]);
@@ -79,27 +82,36 @@ export default function App() {
     return favs.find((f) => recipeKey(f.recipe) === k);
   };
 
-  const favFailed = (e: Error) => setError(`Merkliste: ${e.message}`);
+  const favWritten = () => setFavWriteError(null);
+
+  // Removing and updating are optimistic. On failure, the stored state is reloaded,
+  // or the previous state restored if even reading fails.
+  function favFailed(e: Error, previous?: Favorite[]) {
+    setFavWriteError(e.message);
+    if (previous) favoritesStore.list().then(setFavs, () => setFavs(previous));
+  }
 
   function saveFavorite(recipe: Recipe, priceCheck: SavedPriceCheck | null = null) {
     favoritesStore
       .save(recipe, priceCheck)
-      .then((f) => setFavs((list) => [f, ...list.filter((x) => x.id !== f.id)]))
-      .catch(favFailed);
+      .then((f) => {
+        favWritten();
+        setFavs((list) => [f, ...list.filter((x) => x.id !== f.id)]);
+      })
+      .catch((e: Error) => favFailed(e));
   }
 
   function removeFavorite(id: string) {
+    const previous = favs;
     setFavs((list) => list.filter((f) => f.id !== id));
-    favoritesStore.remove(id).catch((e: Error) => {
-      favFailed(e);
-      favoritesStore.list().then(setFavs, () => {});
-    });
+    favoritesStore.remove(id).then(favWritten, (e: Error) => favFailed(e, previous));
   }
 
   function updateFavorite(id: string, changes: FavoriteChanges) {
+    const previous = favs;
     // Optimistic, so that ticking shopping list items feels instant.
     setFavs((list) => list.map((f) => (f.id === id ? { ...f, ...changes } : f)));
-    favoritesStore.update(id, changes).catch(favFailed);
+    favoritesStore.update(id, changes).then(favWritten, (e: Error) => favFailed(e, previous));
   }
 
   // Asks before throwing away a note or a saved price comparison.
@@ -124,6 +136,7 @@ export default function App() {
   function switchView(v: View) {
     setView(v);
     setSelected(null);
+    setFavWriteError(null);
   }
 
   const storeRow = (
@@ -192,7 +205,11 @@ export default function App() {
         </section>
       )}
 
-      {error && <div className="error">{error}</div>}
+      {view === "search" && error && <div className="error">{error}</div>}
+      {/* In the Merkliste, an "unavailable" message is already shown in place of the list. */}
+      {favWriteError && !(view === "favorites" && favWriteError === favUnavailable) && (
+        <div className="error">{favWriteError}</div>
+      )}
 
       {view === "search" && loading && (
         <div className="loading">
@@ -228,8 +245,8 @@ export default function App() {
             onToggleSaved={toggleFavorite}
           />
         )
-      ) : favError ? (
-        <div className="error">{favError}</div>
+      ) : favUnavailable ? (
+        <div className="error">{favUnavailable}</div>
       ) : (
         <FavoritesList
           favorites={favs}

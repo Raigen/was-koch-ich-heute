@@ -19,7 +19,7 @@ export default function RecipeList({ recipes, onSelect, isSaved, onToggleSaved }
         <article key={r.id} className="recipe-card">
           <div className="card-head">
             <h2>{r.title}</h2>
-            <FavoriteButton saved={isSaved(r)} onClick={() => onToggleSaved(r)} />
+            <FavoriteButton title={r.title} saved={isSaved(r)} onClick={() => onToggleSaved(r)} />
           </div>
           <p className="muted">{r.description}</p>
           <ul className="facts">

@@ -173,6 +173,7 @@ button:disabled { opacity: 0.55; cursor: not-allowed; }
 .fav-foot .btn-link { margin: 0; font-size: inherit; }
 
 .shopping-list { margin-top: 24px; }
+.notice.incomplete { margin: 16px 0 0; }
 .shopping-head, .shopping-foot { display: flex; justify-content: space-between; align-items: center; gap: 12px; flex-wrap: wrap; }
 .shopping-group h4 { margin: 12px 0 2px; font-size: 0.92rem; padding-left: 8px; border-left: 4px solid var(--store); }
 .shopping-foot { margin-top: 12px; }

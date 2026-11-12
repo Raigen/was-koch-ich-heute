@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import type { Favorite, FavoriteChanges, SavedPriceCheck } from "../favorites";
+import { shoppingItemKey, type Favorite, type FavoriteChanges, type SavedPriceCheck } from "../favorites";
 import { formatQty } from "../format";
 import type { Comparison, Recipe, Store, StorePrices } from "../types";
 import FavoriteButton from "./FavoriteButton";
@@ -46,6 +46,14 @@ export default function RecipeDetail({
   // The latest comparison of this view, kept so that saving afterwards includes it.
   const [lastCheck, setLastCheck] = useState<SavedPriceCheck | null>(null);
   const [note, setNote] = useState(favorite?.note ?? "");
+  // A comparison with failed shops that was not stored (see handleComplete).
+  const [incomplete, setIncomplete] = useState(false);
+  // Follow the stored note when the entry changes (e.g. un-starred and starred again).
+  const [noteFor, setNoteFor] = useState(favorite?.id);
+  if (noteFor !== favorite?.id) {
+    setNoteFor(favorite?.id);
+    setNote(favorite?.note ?? "");
+  }
   const toBuy = recipe.ingredients.filter((_, i) => buy[i]);
   // What the running comparison was started with (the inputs may change while it runs).
   const runInput = useRef({ ingredients: toBuy, storeIds: stores.map((s) => s.id), postalCode });
@@ -56,12 +64,20 @@ export default function RecipeDetail({
   }
 
   function handleComplete(results: StorePrices[], comparison: Comparison) {
+    // Only a complete comparison is stored: a failed or partial one (timeouts, network
+    // trouble in the supermarket) must not replace a good stored list and its ticks.
+    // After "Fehlgeschlagene erneut versuchen" succeeds, this runs again and stores it.
+    const complete = results.every((r) => !r.error) && comparison.mix.some((m) => m.offer);
+    setIncomplete(!complete);
+    if (!complete) return;
+    // Keep ticks for items that are still bought in the same shop.
+    const inMix = new Set(comparison.mix.flatMap((m) => (m.offer ? [shoppingItemKey(m.offer.storeId, m.offer.ingredient)] : [])));
     const check: SavedPriceCheck = {
       comparedAt: new Date().toISOString(),
       ...runInput.current,
       results,
       comparison,
-      checked: [],
+      checked: (saved?.checked ?? []).filter((k) => inMix.has(k)),
     };
     setLastCheck(check);
     if (favorite) onUpdate(favorite.id, { priceCheck: check });
@@ -83,7 +99,7 @@ export default function RecipeDetail({
           <p className="muted">{recipe.description}</p>
         </div>
         <div className="detail-actions">
-          <FavoriteButton saved={!!favorite} onClick={toggleFavorite} />
+          <FavoriteButton title={recipe.title} saved={!!favorite} onClick={toggleFavorite} />
           {recipe.sourceUrl && (
             <a href={recipe.sourceUrl} target="_blank" rel="noreferrer noopener" className="link">
               Originalrezept öffnen ↗
@@ -154,6 +170,13 @@ export default function RecipeDetail({
           allStores={allStores}
           onCheckedChange={(checked) => onUpdate(favorite.id, { priceCheck: { ...saved, checked } })}
         />
+      )}
+
+      {incomplete && favorite && (
+        <div className="notice incomplete">
+          Der Preisvergleich ist unvollständig und wurde nicht gespeichert.
+          {saved && " Die gespeicherte Einkaufsliste bleibt erhalten."}
+        </div>
       )}
 
       {run > 0 ? (
