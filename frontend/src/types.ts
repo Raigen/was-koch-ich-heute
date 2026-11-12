@@ -1,0 +1,88 @@
+// Spiegelt die Typen aus backend/internal/model/model.go.
+
+export interface Store {
+  id: string;
+  name: string;
+  domains: string[];
+  color: string;
+}
+
+export interface Ingredient {
+  name: string;
+  quantity: number;
+  unit: string;
+  pantry: boolean;
+}
+
+export interface Recipe {
+  id: string;
+  title: string;
+  description: string;
+  sourceUrl: string;
+  sourceName: string;
+  servings: number;
+  totalTimeMinutes: number;
+  difficulty: string;
+  ingredients: Ingredient[];
+  steps: string[];
+  estimatedCostEur: number;
+}
+
+export interface RecipeQuery {
+  query: string;
+  servings: number;
+  maxBudget: number;
+  diet: string;
+  maxRecipes: number;
+  exclude: string;
+}
+
+export interface Offer {
+  storeId: string;
+  ingredient: string;
+  productName: string;
+  price: number;
+  packageAmount: number;
+  packageUnit: string;
+  packagesNeeded: number;
+  cost: number;
+  unitPrice: string;
+  url: string;
+  isPromotion: boolean;
+  confidence: string;
+  note: string;
+}
+
+export interface StorePrices {
+  storeId: string;
+  offers: Offer[];
+  notFound: string[];
+  error?: string;
+  cached: boolean;
+}
+
+export interface StoreTotal {
+  storeId: string;
+  total: number;
+  found: number;
+  missing: string[];
+}
+
+export interface Comparison {
+  storeTotals: StoreTotal[];
+  cheapestStoreId: string;
+  mix: { ingredient: string; offer: Offer | null }[];
+  mixTotal: number;
+  mixMissing: string[];
+  ingredientCount: number;
+}
+
+export interface AppConfig {
+  provider: string;
+  demo: boolean;
+}
+
+export type PriceEvent =
+  | { type: "store"; store: StorePrices }
+  | { type: "summary"; comparison: Comparison }
+  | { type: "error"; message: string };
