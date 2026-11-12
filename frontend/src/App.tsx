@@ -67,8 +67,8 @@ export default function App() {
 
       {config?.demo && (
         <div className="notice">
-          Demo-Modus: Rezepte und Preise sind Beispieldaten. Für echte KI-Recherche <code>ANTHROPIC_API_KEY</code> im
-          Backend setzen.
+          Demo-Modus: Rezepte und Preise sind Beispieldaten. Für echte KI-Recherche <code>ANTHROPIC_API_KEY</code>{" "}
+          oder <code>MISTRAL_API_KEY</code> im Backend setzen.
         </div>
       )}
 

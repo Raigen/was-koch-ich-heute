@@ -24,30 +24,48 @@ type Researcher interface {
 
 // Config steuert, welcher Anbieter verwendet wird.
 type Config struct {
-	Provider string // "claude", "demo" oder leer (automatisch)
-	APIKey   string
-	Model    string
-	Effort   string
+	Provider string // "claude", "mistral", "demo" oder leer (automatisch)
+
+	// Claude (Anthropic)
+	APIKey string
+	Model  string
+	Effort string
+
+	// Mistral
+	MistralAPIKey          string
+	MistralModel           string
+	MistralBaseURL         string // z. B. https://api.eu.mistral.ai
+	MistralReasoningEffort string
+	MistralWebSearch       string // "standard" oder "premium"
 }
 
-// New erzeugt den konfigurierten Researcher. Ohne Anbieterangabe wird Claude
-// verwendet, sofern ein API-Key gesetzt ist, sonst der Demo-Modus.
+// New erzeugt den konfigurierten Researcher. Ohne Anbieterangabe wird der
+// erste Anbieter mit gesetztem API-Key gewählt (Claude, dann Mistral),
+// sonst der Demo-Modus.
 func New(cfg Config) (Researcher, error) {
 	provider := strings.ToLower(strings.TrimSpace(cfg.Provider))
 	if provider == "" {
-		if cfg.APIKey != "" {
+		switch {
+		case cfg.APIKey != "":
 			provider = "claude"
-		} else {
+		case cfg.MistralAPIKey != "":
+			provider = "mistral"
+		default:
 			provider = "demo"
 		}
 	}
 	switch provider {
 	case "claude", "anthropic":
 		return NewClaude(cfg), nil
+	case "mistral":
+		if cfg.MistralAPIKey == "" {
+			return nil, fmt.Errorf("AI_PROVIDER=mistral benötigt MISTRAL_API_KEY")
+		}
+		return NewMistral(cfg), nil
 	case "demo", "mock":
 		return NewDemo(), nil
 	default:
-		return nil, fmt.Errorf("unbekannter KI-Anbieter %q (erlaubt: claude, demo)", cfg.Provider)
+		return nil, fmt.Errorf("unbekannter KI-Anbieter %q (erlaubt: claude, mistral, demo)", cfg.Provider)
 	}
 }
 

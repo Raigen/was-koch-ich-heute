@@ -22,6 +22,12 @@ func main() {
 		APIKey:   os.Getenv("ANTHROPIC_API_KEY"),
 		Model:    os.Getenv("CLAUDE_MODEL"),
 		Effort:   os.Getenv("CLAUDE_EFFORT"),
+
+		MistralAPIKey:          os.Getenv("MISTRAL_API_KEY"),
+		MistralModel:           os.Getenv("MISTRAL_MODEL"),
+		MistralBaseURL:         os.Getenv("MISTRAL_BASE_URL"),
+		MistralReasoningEffort: os.Getenv("MISTRAL_REASONING_EFFORT"),
+		MistralWebSearch:       os.Getenv("MISTRAL_WEB_SEARCH"),
 	})
 	if err != nil {
 		slog.Error("Konfiguration fehlerhaft", "err", err)

@@ -1,0 +1,253 @@
+package research
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/raigen/was-koch-ich-heute/backend/internal/model"
+)
+
+const (
+	defaultMistralModel   = "mistral-medium-latest"
+	defaultMistralBaseURL = "https://api.mistral.ai"
+)
+
+// Mistral recherchiert über die Mistral Conversations API (/v1/conversations)
+// mit dem eingebauten Werkzeug web_search. Für Go gibt es kein offizielles
+// Mistral-SDK, daher wird die REST-API direkt angesprochen.
+type Mistral struct {
+	apiKey          string
+	baseURL         string
+	model           string
+	reasoningEffort string
+	searchTool      string
+	http            *http.Client
+	maxRetries      int
+}
+
+// NewMistral erzeugt einen Mistral-Researcher.
+func NewMistral(cfg Config) *Mistral {
+	m := &Mistral{
+		apiKey:          cfg.MistralAPIKey,
+		baseURL:         strings.TrimRight(cfg.MistralBaseURL, "/"),
+		model:           cfg.MistralModel,
+		reasoningEffort: strings.ToLower(strings.TrimSpace(cfg.MistralReasoningEffort)),
+		searchTool:      "web_search",
+		http:            &http.Client{Timeout: 6 * time.Minute},
+		maxRetries:      2,
+	}
+	if m.baseURL == "" {
+		m.baseURL = defaultMistralBaseURL
+	}
+	if m.model == "" {
+		m.model = defaultMistralModel
+	}
+	if strings.EqualFold(cfg.MistralWebSearch, "premium") {
+		// Premium-Suche bezieht zusätzlich Nachrichtenquellen ein.
+		m.searchTool = "web_search_premium"
+	}
+	return m
+}
+
+func (m *Mistral) Name() string { return "Mistral (" + m.model + ")" }
+
+const (
+	mistralRecipeTools = "Nutze das Werkzeug web_search für die Recherche."
+	mistralPriceTools  = "Nutze das Werkzeug web_search und suche gezielt auf den Websites des Supermarkts " +
+		"(z. B. mit \"site:<domain> <Produkt>\"). Ergebnisse anderer Websites zählen nicht als Shoppreis."
+)
+
+func (m *Mistral) SearchRecipes(ctx context.Context, q model.RecipeQuery) ([]model.Recipe, error) {
+	text, err := m.run(ctx, recipeSystemPrompt(mistralRecipeTools), recipeUserPrompt(q))
+	if err != nil {
+		return nil, err
+	}
+	return parseRecipes(text)
+}
+
+func (m *Mistral) FindPrices(ctx context.Context, store model.Store, ingredients []model.Ingredient, postalCode string) (model.StorePrices, error) {
+	text, err := m.run(ctx, priceSystemPrompt(mistralPriceTools), priceUserPrompt(store, ingredients, postalCode))
+	if err != nil {
+		return model.StorePrices{StoreID: store.ID}, err
+	}
+	sp, err := parsePrices(store, text)
+	if err != nil {
+		return sp, err
+	}
+	// Die Mistral-Websuche lässt sich nicht auf Domains beschränken; Links zu
+	// fremden Seiten werden daher verworfen und die Vertrauensstufe gesenkt.
+	for i := range sp.Offers {
+		o := &sp.Offers[i]
+		if o.URL != "" && !urlMatchesDomains(o.URL, store.Domains) {
+			o.URL = ""
+			if o.Confidence == "hoch" {
+				o.Confidence = "mittel"
+			}
+		}
+	}
+	return sp, nil
+}
+
+// --- Wire-Format der Conversations API -------------------------------------
+
+type mistralTool struct {
+	Type string `json:"type"`
+}
+
+type mistralCompletionArgs struct {
+	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+}
+
+type mistralRequest struct {
+	Model          string                 `json:"model"`
+	Inputs         string                 `json:"inputs"`
+	Instructions   string                 `json:"instructions,omitempty"`
+	Tools          []mistralTool          `json:"tools,omitempty"`
+	CompletionArgs *mistralCompletionArgs `json:"completion_args,omitempty"`
+	Stream         bool                   `json:"stream"`
+	// Store=false: Die Unterhaltung wird nicht serverseitig gespeichert.
+	Store bool `json:"store"`
+}
+
+type mistralChunk struct {
+	Type  string `json:"type"` // "text", "tool_reference", …
+	Text  string `json:"text"`
+	Title string `json:"title"`
+	URL   string `json:"url"`
+}
+
+// mistralContent ist entweder ein String oder eine Liste von Chunks.
+type mistralContent []mistralChunk
+
+func (c *mistralContent) UnmarshalJSON(data []byte) error {
+	var s string
+	if err := json.Unmarshal(data, &s); err == nil {
+		*c = mistralContent{{Type: "text", Text: s}}
+		return nil
+	}
+	var chunks []mistralChunk
+	if err := json.Unmarshal(data, &chunks); err != nil {
+		return err
+	}
+	*c = chunks
+	return nil
+}
+
+type mistralResponse struct {
+	ConversationID string `json:"conversation_id"`
+	Outputs        []struct {
+		Type    string         `json:"type"` // "message.output", "tool.execution", …
+		Content mistralContent `json:"content"`
+	} `json:"outputs"`
+}
+
+func (m *Mistral) run(ctx context.Context, system, prompt string) (string, error) {
+	if m.apiKey == "" {
+		return "", errors.New("Mistral API: MISTRAL_API_KEY ist nicht gesetzt")
+	}
+	req := mistralRequest{
+		Model:        m.model,
+		Inputs:       prompt,
+		Instructions: system,
+		Tools:        []mistralTool{{Type: m.searchTool}},
+		Stream:       false,
+		Store:        false,
+	}
+	if m.reasoningEffort != "" {
+		req.CompletionArgs = &mistralCompletionArgs{ReasoningEffort: m.reasoningEffort}
+	}
+	body, err := json.Marshal(req)
+	if err != nil {
+		return "", err
+	}
+
+	var resp mistralResponse
+	for attempt := 0; ; attempt++ {
+		status, raw, err := m.post(ctx, "/v1/conversations", body)
+		retryable := err != nil || status == http.StatusTooManyRequests || status >= 500
+		if retryable && attempt < m.maxRetries && ctx.Err() == nil {
+			if err := sleep(ctx, time.Duration(1<<attempt)*2*time.Second); err != nil {
+				return "", err
+			}
+			continue
+		}
+		if err != nil {
+			return "", fmt.Errorf("Mistral API: %w", err)
+		}
+		switch {
+		case status == http.StatusUnauthorized || status == http.StatusForbidden:
+			return "", fmt.Errorf("Mistral API: Zugang verweigert – MISTRAL_API_KEY prüfen (%d)", status)
+		case status == http.StatusTooManyRequests:
+			return "", errors.New("Mistral API: Rate-Limit erreicht, bitte später erneut versuchen")
+		case status >= 300:
+			return "", fmt.Errorf("Mistral API: HTTP %d: %s", status, truncate(string(raw), 300))
+		}
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return "", fmt.Errorf("Mistral API: unerwartete Antwort: %w", err)
+		}
+		break
+	}
+
+	var sb strings.Builder
+	for _, out := range resp.Outputs {
+		if out.Type != "message.output" {
+			continue
+		}
+		for _, ch := range out.Content {
+			if ch.Type == "text" {
+				sb.WriteString(ch.Text)
+			}
+		}
+	}
+	if sb.Len() == 0 {
+		return "", errors.New("Mistral API: Antwort enthielt keinen Text")
+	}
+	return sb.String(), nil
+}
+
+func (m *Mistral) post(ctx context.Context, path string, body []byte) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, m.baseURL+path, bytes.NewReader(body))
+	if err != nil {
+		return 0, nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+m.apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json")
+	res, err := m.http.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer res.Body.Close()
+	raw, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
+	return res.StatusCode, raw, err
+}
+
+func urlMatchesDomains(rawURL string, domains []string) bool {
+	host := strings.ToLower(rawURL)
+	host = strings.TrimPrefix(strings.TrimPrefix(host, "https://"), "http://")
+	if i := strings.IndexAny(host, "/?#:"); i >= 0 {
+		host = host[:i]
+	}
+	for _, d := range domains {
+		if host == d || strings.HasSuffix(host, "."+d) {
+			return true
+		}
+	}
+	return false
+}
+
+func truncate(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	return s[:n] + "…"
+}
+
+var _ Researcher = (*Mistral)(nil)
