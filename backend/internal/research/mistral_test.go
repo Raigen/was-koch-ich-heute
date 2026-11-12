@@ -51,8 +51,9 @@ func TestMistralFindPrices(t *testing.T) {
 		t.Fatal(err)
 	}
 	// prompt_tokens includes the cached tokens; connector tokens count as input.
+	// The first attempt failed with 503 and may have been billed: incomplete.
 	want := model.Usage{Provider: "mistral", Model: "mistral-medium-latest", Requests: 1,
-		InputTokens: 1200 - 1024 + 7112, OutputTokens: 300, CacheReadTokens: 1024, WebSearches: 3}
+		InputTokens: 1200 - 1024 + 7112, OutputTokens: 300, CacheReadTokens: 1024, WebSearches: 3, Incomplete: true}
 	if !reflect.DeepEqual(usage, want) {
 		t.Errorf("usage = %+v, want %+v", usage, want)
 	}

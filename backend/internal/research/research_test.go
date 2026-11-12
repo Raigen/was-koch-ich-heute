@@ -195,6 +195,47 @@ func TestClaudeNotBilled(t *testing.T) {
 	}
 }
 
+// TestClaudeHiddenRetries checks the SDK's own retries: a failed attempt that
+// may have been billed (here 500) makes the usage incomplete and prevents a
+// later 4xx from being classified as not billed.
+func TestClaudeHiddenRetries(t *testing.T) {
+	run := func(final int) (model.Usage, int, error) {
+		calls := 0
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After-Ms", "1")
+			if calls == 1 {
+				w.WriteHeader(http.StatusInternalServerError)
+				_, _ = io.WriteString(w, `{"type":"error","error":{"type":"api_error","message":"boom"}}`)
+				return
+			}
+			w.WriteHeader(final)
+			if final != http.StatusOK {
+				_, _ = io.WriteString(w, `{"type":"error","error":{"type":"rate_limit_error","message":"slow down"}}`)
+				return
+			}
+			_, _ = io.WriteString(w, `{"id":"m","type":"message","role":"assistant","model":"claude-opus-5-5","stop_reason":"end_turn",
+				"content":[{"type":"text","text":"{\"recipes\":[{\"title\":\"Dal\"}]}"}],"usage":{"input_tokens":100,"output_tokens":5}}`)
+		}))
+		defer srv.Close()
+		cl := NewClaude(Config{APIKey: "test"})
+		cl.client = anthropic.NewClient(option.WithAPIKey("test"), option.WithBaseURL(srv.URL), option.WithMaxRetries(1))
+		_, usage, err := cl.SearchRecipes(context.Background(), model.RecipeQuery{Query: "dal"})
+		return usage, calls, err
+	}
+
+	usage, calls, err := run(http.StatusTooManyRequests)
+	if calls != 2 || err == nil || IsNotBilled(err) || !usage.Incomplete {
+		t.Errorf("500 then 429: calls=%d err=%v notBilled=%v usage=%+v", calls, err, IsNotBilled(err), usage)
+	}
+
+	usage, calls, err = run(http.StatusOK)
+	if calls != 2 || err != nil || !usage.Incomplete || usage.Requests != 1 || usage.InputTokens != 100 {
+		t.Errorf("500 then 200: calls=%d err=%v usage=%+v", calls, err, usage)
+	}
+}
+
 func TestDemoUsageIsZero(t *testing.T) {
 	d := NewDemo()
 	d.Delay = 0

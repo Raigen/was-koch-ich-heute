@@ -41,7 +41,9 @@ function details(u: Usage): string[] {
   lines.push(`Web-Suchen: ${formatCount(u.webSearches)}`);
   if (u.webFetches) lines.push(`Seitenabrufe: ${formatCount(u.webFetches)}`);
   if (u.incomplete) {
-    lines.push("Unvollständig: mindestens ein API-Aufruf wurde abgebrochen (z. B. Zeitüberschreitung) – seine Kosten fehlen.");
+    lines.push(
+      "Unvollständig: Mindestens ein API-Aufruf wurde abgebrochen oder ist fehlgeschlagen (z. B. Zeitüberschreitung, Serverfehler) und wurde womöglich trotzdem berechnet – seine Kosten fehlen.",
+    );
   }
   if (!u.costKnown) {
     lines.push(

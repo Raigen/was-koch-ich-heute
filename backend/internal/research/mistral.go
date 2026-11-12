@@ -258,7 +258,9 @@ func (m *Mistral) run(ctx context.Context, system, prompt string) (string, model
 			return "", usage, fmt.Errorf("Mistral API: unerwartete Antwort: %w", err)
 		}
 		// Failed attempts report no usage; only the successful response counts.
+		// If an earlier attempt may have been billed, the usage is a lower bound.
 		usage = m.usage(resp)
+		usage.Incomplete = mayBeBilled
 		break
 	}
 

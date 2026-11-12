@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/anthropics/anthropic-sdk-go/v2"
@@ -161,9 +163,29 @@ func claudeCalls(resp *anthropic.BetaMessage) []model.ModelCall {
 // returns the full text of the final response together with the usage summed
 // over all responses.
 //
+// The SDK retries failed attempts on its own (408, 409, 429, 5xx, connection
+// errors, per-attempt timeouts). An attempt that failed with a timeout, a
+// connection error, 408 or 5xx may have been billed without reporting usage,
+// so then the usage is marked incomplete and an error is never classified as
+// not billed.
+//
 // Returned errors are shown in the German UI, hence German messages.
-func (c *Claude) run(ctx context.Context, system, prompt string, tools []anthropic.BetaToolUnionParam) (string, model.Usage, error) {
-	usage := model.Usage{Provider: "claude", Model: c.model}
+func (c *Claude) run(ctx context.Context, system, prompt string, tools []anthropic.BetaToolUnionParam) (text string, usage model.Usage, err error) {
+	usage = model.Usage{Provider: "claude", Model: c.model}
+	var mayBeBilled atomic.Bool
+	watchAttempts := option.WithMiddleware(func(req *http.Request, next option.MiddlewareNext) (*http.Response, error) {
+		res, err := next(req)
+		if err != nil || res.StatusCode == http.StatusRequestTimeout || res.StatusCode >= 500 {
+			mayBeBilled.Store(true)
+		}
+		return res, err
+	})
+	defer func() {
+		if mayBeBilled.Load() {
+			usage.Incomplete = true
+		}
+	}()
+
 	params := anthropic.BetaMessageNewParams{
 		Model:     c.model,
 		MaxTokens: 16000,
@@ -180,7 +202,7 @@ func (c *Claude) run(ctx context.Context, system, prompt string, tools []anthrop
 	}
 
 	for i := 0; ; i++ {
-		resp, err := c.client.Beta.Messages.New(ctx, params)
+		resp, err := c.client.Beta.Messages.New(ctx, params, watchAttempts)
 		if err != nil {
 			var apiErr *anthropic.Error
 			if errors.As(err, &apiErr) {
@@ -194,8 +216,9 @@ func (c *Claude) run(ctx context.Context, system, prompt string, tools []anthrop
 					msg = fmt.Errorf("Claude API: %w", err)
 				}
 				// A rejected request costs nothing; the usage of earlier
-				// responses (pause_turn) stays as it is.
-				if rejectedBeforeBilling(apiErr.StatusCode) {
+				// responses (pause_turn) stays as it is. Not if an earlier
+				// (retried) attempt may have been billed.
+				if rejectedBeforeBilling(apiErr.StatusCode) && !mayBeBilled.Load() {
 					msg = notBilled(msg)
 				}
 				return "", usage, msg
