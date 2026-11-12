@@ -181,6 +181,10 @@ waiting time). An opened recipe shows the same ingredient selection and price co
 - **Token:** create one in Mealie under *User profile → API Tokens* (`/user/profile/api-tokens`). It stays
   in the backend: the browser only talks to this app, and recipe images are proxied through
   `/api/mealie/images/{id}`.
+- **Access:** this app has no login. **Anyone who can reach the app can list and read every recipe the
+  token can see in Mealie**, including private ones. Use a token of a dedicated Mealie user (or a group or
+  household that only holds recipes you are happy to share). Do not expose the app to the internet without
+  your own authentication in front of it, e.g. a reverse proxy with basic auth or an SSO proxy.
 - **Ingredients:** if Mealie has parsed an ingredient, its food, quantity and unit are used. Unparsed lines
   (e.g. "500 g Mehl") are split with simple rules; anything not recognised stays in the name. Running
   Mealie's ingredient parser on your recipes gives the best results.
