@@ -105,6 +105,32 @@ sequenceDiagram
 
 Results are cached in memory (recipes 24 h, prices 6 h) to save API costs.
 
+### API usage and cost
+
+Every recipe search and price comparison shows the AI usage it caused, e.g.
+"≈ 0,12 € · 18.400 Tokens · 6 Web-Suchen"; the tooltip has the details (API calls, input, output and
+cache tokens, web searches and fetches). The price comparison shows the cost per shop and in total.
+
+- The providers report the usage; the backend sums it over all API calls of a research, including
+  resumed `pause_turn` responses, and computes the cost (`internal/pricing/cost.go`).
+- `/api/recipes/search` returns `usage`, `store` events in `/api/prices/compare` carry the shop's `usage`,
+  and the `summary` event's `comparison.usage` holds the total.
+- Cache hits cost nothing and are marked `"cached": true`; demo mode reports zero usage.
+- The cost is an estimate from a price table (USD list prices, converted to euros). The built-in table
+  covers the default models; `PRICE_TABLE` overrides or extends it without code changes:
+
+  ```json
+  {
+    "eurPerUsd": 0.86,
+    "models": {
+      "claude-opus-5-5": { "input": 4, "output": 20, "cacheRead": 0.2, "cacheWrite": 5, "webSearchPer1000": 10 }
+    }
+  }
+  ```
+
+  Token prices are per million tokens, tool prices per 1,000 calls. A model ID also matches dated
+  variants (`claude-opus-5-5-…`). Models without a price show "Kosten unbekannt".
+
 ### Design decisions
 
 - **The AI delivers raw data, Go does the math.** Prices and package sizes come from the model; package
@@ -126,7 +152,7 @@ backend/
   internal/api/          HTTP routes, NDJSON streaming, cache, serving the frontend
   internal/research/     Researcher interface; Claude, Mistral and demo implementations;
                          shared prompts; list of shops
-  internal/pricing/      units, package counts, price comparison
+  internal/pricing/      units, package counts, price comparison, AI cost estimate
   internal/model/        shared data types (mirrored in frontend/src/types.ts)
 frontend/
   src/api.ts             API client including the NDJSON stream reader
@@ -140,10 +166,12 @@ frontend/
 ```go
 type Researcher interface {
     Name() string
-    SearchRecipes(ctx, model.RecipeQuery) ([]model.Recipe, error)
-    FindPrices(ctx, model.Store, []model.Ingredient, postalCode string) (model.StorePrices, error)
+    SearchRecipes(ctx, model.RecipeQuery) ([]model.Recipe, model.Usage, error)
+    FindPrices(ctx, model.Store, []model.Ingredient, postalCode string) (model.StorePrices, model.Usage, error)
 }
 ```
+
+Both methods return the AI usage summed over all API calls, also together with an error.
 
 To add a provider:
 1. Write a new implementation of this interface.
@@ -165,6 +193,7 @@ To add a provider:
 | `MISTRAL_WEB_SEARCH` | `standard` or `premium` | `standard` |
 | `PRICE_PARALLEL` | concurrent shop research | `4` |
 | `STORE_TIMEOUT` | maximum research time per shop, e.g. `3m`, `90s` | `3m` |
+| `PRICE_TABLE` | price table for the cost estimate: path to a JSON file or inline JSON (see [API usage and cost](#api-usage-and-cost)) | built-in prices |
 | `ADDR` | listen address | `:8080` |
 | `STATIC_DIR` | path to the built frontend | – |
 

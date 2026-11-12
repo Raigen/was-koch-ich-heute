@@ -72,6 +72,8 @@ type StorePrices struct {
 	Error    string   `json:"error,omitempty"`
 	TimedOut bool     `json:"timedOut,omitempty"`
 	Cached   bool     `json:"cached"`
+	// Usage is the AI usage of this shop's research (zero for cache hits).
+	Usage *Usage `json:"usage,omitempty"`
 }
 
 // PriceRequest asks for prices of an ingredient list in several shops.
@@ -104,4 +106,70 @@ type Comparison struct {
 	MixTotal        float64   `json:"mixTotal"`
 	MixMissing      []string  `json:"mixMissing"`
 	IngredientCount int       `json:"ingredientCount"`
+	// Usage is the total AI usage of all shops in this comparison.
+	Usage *Usage `json:"usage,omitempty"`
+}
+
+// Usage describes the AI usage caused by one research call (or a sum of
+// several) and its estimated cost.
+type Usage struct {
+	Provider string `json:"provider"`
+	Model    string `json:"model"`
+	// Requests is the number of API calls, including pause_turn continuations.
+	Requests int `json:"requests"`
+	// InputTokens are uncached input tokens, including search result tokens
+	// that the provider bills as input.
+	InputTokens      int64 `json:"inputTokens"`
+	OutputTokens     int64 `json:"outputTokens"`
+	CacheReadTokens  int64 `json:"cacheReadTokens"`
+	CacheWriteTokens int64 `json:"cacheWriteTokens"`
+	WebSearches      int   `json:"webSearches"`
+	WebFetches       int   `json:"webFetches"`
+	// CostEUR is the estimate from the configured price table.
+	CostEUR float64 `json:"costEur"`
+	// CostKnown is false if the price table has no entry for the model.
+	CostKnown bool `json:"costKnown"`
+	// Cached marks results served from the backend cache (no new AI cost).
+	Cached bool `json:"cached"`
+}
+
+// TotalTokens returns the sum of all token counts.
+func (u Usage) TotalTokens() int64 {
+	return u.InputTokens + u.OutputTokens + u.CacheReadTokens + u.CacheWriteTokens
+}
+
+// Add adds the counts of o to u. Provider and model are taken from o if u has
+// none yet. Cost and the cached flag are not touched; see SumUsage.
+func (u *Usage) Add(o Usage) {
+	if u.Provider == "" {
+		u.Provider = o.Provider
+	}
+	if u.Model == "" {
+		u.Model = o.Model
+	}
+	u.Requests += o.Requests
+	u.InputTokens += o.InputTokens
+	u.OutputTokens += o.OutputTokens
+	u.CacheReadTokens += o.CacheReadTokens
+	u.CacheWriteTokens += o.CacheWriteTokens
+	u.WebSearches += o.WebSearches
+	u.WebFetches += o.WebFetches
+}
+
+// SumUsage adds up several usages including their cost. The cost of the sum
+// is known only if it is known for every part, and the sum counts as cached
+// only if every part came from the cache.
+func SumUsage(parts ...Usage) Usage {
+	var total Usage
+	if len(parts) == 0 {
+		return total
+	}
+	total.CostKnown, total.Cached = true, true
+	for _, p := range parts {
+		total.Add(p)
+		total.CostEUR += p.CostEUR
+		total.CostKnown = total.CostKnown && p.CostKnown
+		total.Cached = total.Cached && p.Cached
+	}
+	return total
 }

@@ -44,13 +44,17 @@ func TestClaudeFindPrices(t *testing.T) {
 		bodies = append(bodies, body)
 		w.Header().Set("Content-Type", "application/json")
 		stop, text := "end_turn", "Result:\n```json\n{\"offers\":[{\"ingredient\":\"Spaghetti\",\"productName\":\"ja! Spaghetti\",\"price\":0.99,\"packageAmount\":500,\"packageUnit\":\"g\",\"packagesNeeded\":1,\"confidence\":\"hoch\"}],\"notFound\":[\"Safran\",\"\"]}\n```"
+		usage := map[string]any{"input_tokens": 5000, "output_tokens": 400, "cache_read_input_tokens": 1000,
+			"cache_creation_input_tokens": 0, "server_tool_use": map[string]any{"web_search_requests": 1, "web_fetch_requests": 1}}
 		if len(bodies) == 1 {
 			stop, text = "pause_turn", "Still searching …"
+			usage = map[string]any{"input_tokens": 3000, "output_tokens": 200, "cache_read_input_tokens": 0,
+				"cache_creation_input_tokens": 500, "server_tool_use": map[string]any{"web_search_requests": 2, "web_fetch_requests": 0}}
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"id": "msg_1", "type": "message", "role": "assistant", "model": "claude-opus-5-5",
 			"stop_reason": stop, "content": []map[string]any{{"type": "text", "text": text}},
-			"usage": map[string]any{"input_tokens": 1, "output_tokens": 1},
+			"usage": usage,
 		})
 	}))
 	defer srv.Close()
@@ -59,12 +63,18 @@ func TestClaudeFindPrices(t *testing.T) {
 	c.client = anthropic.NewClient(option.WithAPIKey("test"), option.WithBaseURL(srv.URL), option.WithMaxRetries(0))
 
 	store, _ := StoreByID("rewe")
-	res, err := c.FindPrices(context.Background(), store, []model.Ingredient{{Name: "Spaghetti", Quantity: 500, Unit: "g"}, {Name: "Safran", Quantity: 1, Unit: "Prise"}}, "10115")
+	res, usage, err := c.FindPrices(context.Background(), store, []model.Ingredient{{Name: "Spaghetti", Quantity: 500, Unit: "g"}, {Name: "Safran", Quantity: 1, Unit: "Prise"}}, "10115")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(bodies) != 2 {
 		t.Fatalf("expected 2 requests (pause_turn resumed), got %d", len(bodies))
+	}
+	// The usage is summed over the paused and the final response.
+	want := model.Usage{Provider: "claude", Model: "claude-opus-5-5", Requests: 2, InputTokens: 8000, OutputTokens: 600,
+		CacheReadTokens: 1000, CacheWriteTokens: 500, WebSearches: 3, WebFetches: 1}
+	if usage != want {
+		t.Errorf("usage = %+v, want %+v", usage, want)
 	}
 	if msgs := bodies[1]["messages"].([]any); len(msgs) != 2 {
 		t.Errorf("continuation should contain 2 messages, has %d", len(msgs))
@@ -83,5 +93,38 @@ func TestClaudeFindPrices(t *testing.T) {
 	}
 	if len(res.NotFound) != 1 || res.NotFound[0] != "Safran" {
 		t.Errorf("wrong NotFound: %v", res.NotFound)
+	}
+}
+
+// TestClaudeUsageOnRefusal checks that usage is reported together with an
+// error, so that a refused research still shows what it cost.
+func TestClaudeUsageOnRefusal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"id":"msg_1","type":"message","role":"assistant","model":"claude-opus-5-5","stop_reason":"refusal",
+			"content":[],"usage":{"input_tokens":700,"output_tokens":10,"server_tool_use":{"web_search_requests":1}}}`)
+	}))
+	defer srv.Close()
+
+	c := NewClaude(Config{APIKey: "test"})
+	c.client = anthropic.NewClient(option.WithAPIKey("test"), option.WithBaseURL(srv.URL), option.WithMaxRetries(0))
+	_, usage, err := c.SearchRecipes(context.Background(), model.RecipeQuery{Query: "dal"})
+	if err == nil {
+		t.Fatal("expected a refusal error")
+	}
+	if usage.Requests != 1 || usage.InputTokens != 700 || usage.WebSearches != 1 {
+		t.Errorf("usage = %+v", usage)
+	}
+}
+
+func TestDemoUsageIsZero(t *testing.T) {
+	d := NewDemo()
+	d.Delay = 0
+	_, usage, err := d.SearchRecipes(context.Background(), model.RecipeQuery{Query: "dal", MaxRecipes: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if usage.Provider != "demo" || usage.Requests != 0 || usage.TotalTokens() != 0 || usage.WebSearches != 0 {
+		t.Errorf("demo usage = %+v", usage)
 	}
 }

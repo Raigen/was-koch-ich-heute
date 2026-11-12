@@ -12,13 +12,18 @@ import (
 // Researcher is the interface every AI provider implements. A new provider
 // (another LLM, a local model, …) only has to provide these methods and be
 // registered in New.
+//
+// Both research methods also return the AI usage they caused (tokens, web
+// searches, model), summed over all API calls. Usage is returned even
+// together with an error, because a failed research can still cost money.
+// The cost is computed later from the price table (see pricing.PriceTable).
 type Researcher interface {
 	// Name returns a short display name of the provider.
 	Name() string
 	// SearchRecipes researches matching recipes on the web.
-	SearchRecipes(ctx context.Context, q model.RecipeQuery) ([]model.Recipe, error)
+	SearchRecipes(ctx context.Context, q model.RecipeQuery) ([]model.Recipe, model.Usage, error)
 	// FindPrices looks up the ingredients in a shop's online assortment.
-	FindPrices(ctx context.Context, store model.Store, ingredients []model.Ingredient, postalCode string) (model.StorePrices, error)
+	FindPrices(ctx context.Context, store model.Store, ingredients []model.Ingredient, postalCode string) (model.StorePrices, model.Usage, error)
 }
 
 // Config selects and configures the provider.

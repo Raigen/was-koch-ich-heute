@@ -30,12 +30,33 @@ func TestRecipeSearch(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	var out struct{ Recipes []model.Recipe }
+	var out struct {
+		Recipes []model.Recipe
+		Cached  bool
+		Usage   *model.Usage
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
 		t.Fatal(err)
 	}
 	if len(out.Recipes) == 0 || out.Recipes[0].ID != "demo-dal" || out.Recipes[0].Servings != 2 {
 		t.Fatalf("unexpected recipes: %+v", out.Recipes)
+	}
+	if out.Usage == nil || out.Usage.Provider != "demo" || out.Usage.CostEUR != 0 || !out.Usage.CostKnown || out.Usage.Cached {
+		t.Errorf("unexpected usage: %+v", out.Usage)
+	}
+
+	// The same search again comes from the cache and is marked as such.
+	resp3, err := http.Post(ts.URL+"/api/recipes/search", "application/json", strings.NewReader(`{"query":"vegan curry","servings":2}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp3.Body.Close()
+	out.Usage = nil
+	if err := json.NewDecoder(resp3.Body).Decode(&out); err != nil {
+		t.Fatal(err)
+	}
+	if !out.Cached || out.Usage == nil || !out.Usage.Cached || out.Usage.Provider != "demo" {
+		t.Errorf("cache hit: cached=%v usage=%+v", out.Cached, out.Usage)
 	}
 
 	resp2, _ := http.Post(ts.URL+"/api/recipes/search", "application/json", strings.NewReader(`{"query":"  "}`))
@@ -66,6 +87,9 @@ func TestPriceCompareStream(t *testing.T) {
 		switch ev.Type {
 		case "store":
 			stores++
+			if ev.Store.Usage == nil || ev.Store.Usage.Provider != "demo" {
+				t.Errorf("store event without usage: %+v", ev.Store)
+			}
 		case "summary":
 			summaries++
 		}
@@ -77,6 +101,9 @@ func TestPriceCompareStream(t *testing.T) {
 	if len(last.Comparison.StoreTotals) != 2 || last.Comparison.MixTotal <= 0 {
 		t.Errorf("unexpected comparison: %+v", last.Comparison)
 	}
+	if u := last.Comparison.Usage; u == nil || u.CostEUR != 0 || !u.CostKnown {
+		t.Errorf("summary without total usage: %+v", u)
+	}
 }
 
 // slowResearcher hangs for one shop until the context expires and counts calls.
@@ -87,13 +114,13 @@ type slowResearcher struct {
 	mu        sync.Mutex
 }
 
-func (s *slowResearcher) FindPrices(ctx context.Context, st model.Store, ings []model.Ingredient, plz string) (model.StorePrices, error) {
+func (s *slowResearcher) FindPrices(ctx context.Context, st model.Store, ings []model.Ingredient, plz string) (model.StorePrices, model.Usage, error) {
 	s.mu.Lock()
 	s.calls[st.ID]++
 	s.mu.Unlock()
 	if st.ID == s.slowStore {
 		<-ctx.Done()
-		return model.StorePrices{}, ctx.Err()
+		return model.StorePrices{}, model.Usage{}, ctx.Err()
 	}
 	return s.Demo.FindPrices(ctx, st, ings, plz)
 }
@@ -142,5 +169,8 @@ func TestPriceCompareTimeoutHeartbeatAndRetry(t *testing.T) {
 	stores, _ = run()
 	if !stores["rewe"].Cached || r.calls["rewe"] != 1 || r.calls["edeka"] != 2 {
 		t.Errorf("retry: rewe cached=%v, calls=%v", stores["rewe"].Cached, r.calls)
+	}
+	if u := stores["rewe"].Usage; u == nil || !u.Cached || u.CostEUR != 0 {
+		t.Errorf("retry: cached shop should report free usage: %+v", u)
 	}
 }

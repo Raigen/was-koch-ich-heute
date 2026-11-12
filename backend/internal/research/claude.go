@@ -58,20 +58,21 @@ func germanLocation() anthropic.BetaUserLocationParam {
 }
 
 // SearchRecipes researches recipes via web search.
-func (c *Claude) SearchRecipes(ctx context.Context, q model.RecipeQuery) ([]model.Recipe, error) {
+func (c *Claude) SearchRecipes(ctx context.Context, q model.RecipeQuery) ([]model.Recipe, model.Usage, error) {
 	tools := []anthropic.BetaToolUnionParam{
 		{OfWebSearchTool20260209: &anthropic.BetaWebSearchTool20260209Param{MaxUses: anthropic.Int(8), UserLocation: germanLocation()}},
 		{OfWebFetchTool20260209: &anthropic.BetaWebFetchTool20260209Param{MaxUses: anthropic.Int(6), MaxContentTokens: anthropic.Int(20000)}},
 	}
-	text, err := c.run(ctx, recipeSystemPrompt(claudeRecipeTools), recipeUserPrompt(q), tools)
+	text, usage, err := c.run(ctx, recipeSystemPrompt(claudeRecipeTools), recipeUserPrompt(q), tools)
 	if err != nil {
-		return nil, err
+		return nil, usage, err
 	}
-	return parseRecipes(text)
+	recipes, err := parseRecipes(text)
+	return recipes, usage, err
 }
 
 // FindPrices researches the ingredient prices at one retailer.
-func (c *Claude) FindPrices(ctx context.Context, store model.Store, ingredients []model.Ingredient, postalCode string) (model.StorePrices, error) {
+func (c *Claude) FindPrices(ctx context.Context, store model.Store, ingredients []model.Ingredient, postalCode string) (model.StorePrices, model.Usage, error) {
 	tools := []anthropic.BetaToolUnionParam{
 		{OfWebSearchTool20260209: &anthropic.BetaWebSearchTool20260209Param{
 			MaxUses:        anthropic.Int(int64(min(3+len(ingredients), 12))),
@@ -84,18 +85,38 @@ func (c *Claude) FindPrices(ctx context.Context, store model.Store, ingredients 
 			AllowedDomains:   store.Domains,
 		}},
 	}
-	text, err := c.run(ctx, priceSystemPrompt(claudePriceTools), priceUserPrompt(store, ingredients, postalCode), tools)
+	text, usage, err := c.run(ctx, priceSystemPrompt(claudePriceTools), priceUserPrompt(store, ingredients, postalCode), tools)
 	if err != nil {
-		return model.StorePrices{StoreID: store.ID}, err
+		return model.StorePrices{StoreID: store.ID}, usage, err
 	}
-	return parsePrices(store, text)
+	sp, err := parsePrices(store, text)
+	return sp, usage, err
+}
+
+// addClaudeUsage adds the usage of one API response to u. Every response,
+// including paused ones, is billed separately, so the counts are summed.
+func addClaudeUsage(u *model.Usage, resp *anthropic.BetaMessage) {
+	if resp.Model != "" {
+		u.Model = string(resp.Model)
+	}
+	u.Add(model.Usage{
+		Requests:         1,
+		InputTokens:      resp.Usage.InputTokens,
+		OutputTokens:     resp.Usage.OutputTokens,
+		CacheReadTokens:  resp.Usage.CacheReadInputTokens,
+		CacheWriteTokens: resp.Usage.CacheCreationInputTokens,
+		WebSearches:      int(resp.Usage.ServerToolUse.WebSearchRequests),
+		WebFetches:       int(resp.Usage.ServerToolUse.WebFetchRequests),
+	})
 }
 
 // run sends a request with server-side tools, resumes paused responses and
-// returns the full text of the final response.
+// returns the full text of the final response together with the usage summed
+// over all responses.
 //
 // Returned errors are shown in the German UI, hence German messages.
-func (c *Claude) run(ctx context.Context, system, prompt string, tools []anthropic.BetaToolUnionParam) (string, error) {
+func (c *Claude) run(ctx context.Context, system, prompt string, tools []anthropic.BetaToolUnionParam) (string, model.Usage, error) {
+	usage := model.Usage{Provider: "claude", Model: c.model}
 	params := anthropic.BetaMessageNewParams{
 		Model:     c.model,
 		MaxTokens: 16000,
@@ -118,24 +139,25 @@ func (c *Claude) run(ctx context.Context, system, prompt string, tools []anthrop
 			if errors.As(err, &apiErr) {
 				switch apiErr.StatusCode {
 				case 401, 403:
-					return "", fmt.Errorf("Claude API: Zugang verweigert – ANTHROPIC_API_KEY prüfen (%d)", apiErr.StatusCode)
+					return "", usage, fmt.Errorf("Claude API: Zugang verweigert – ANTHROPIC_API_KEY prüfen (%d)", apiErr.StatusCode)
 				case 429:
-					return "", fmt.Errorf("Claude API: Rate-Limit erreicht, bitte später erneut versuchen")
+					return "", usage, fmt.Errorf("Claude API: Rate-Limit erreicht, bitte später erneut versuchen")
 				}
 			}
-			return "", fmt.Errorf("Claude API: %w", err)
+			return "", usage, fmt.Errorf("Claude API: %w", err)
 		}
+		addClaudeUsage(&usage, resp)
 
 		switch resp.StopReason {
 		case anthropic.BetaStopReasonPauseTurn:
 			if i >= maxContinuations {
-				return "", errors.New("Recherche hat zu lange gedauert (zu viele Fortsetzungen)")
+				return "", usage, errors.New("Recherche hat zu lange gedauert (zu viele Fortsetzungen)")
 			}
 			// Resume the server-side tool loop: append the response and resend.
 			params.Messages = append(params.Messages, resp.ToParam())
 			continue
 		case anthropic.BetaStopReasonRefusal:
-			return "", errors.New("die Anfrage wurde vom Modell abgelehnt")
+			return "", usage, errors.New("die Anfrage wurde vom Modell abgelehnt")
 		case anthropic.BetaStopReasonMaxTokens:
 			// Still try to parse the (possibly complete) JSON.
 		}
@@ -146,7 +168,7 @@ func (c *Claude) run(ctx context.Context, system, prompt string, tools []anthrop
 				sb.WriteString(t.Text)
 			}
 		}
-		return sb.String(), nil
+		return sb.String(), usage, nil
 	}
 }
 
