@@ -40,9 +40,13 @@ export interface FavoritesStore {
   /** All favorites, most recently saved first. */
   list(): Promise<Favorite[]>;
   get(id: string): Promise<Favorite | undefined>;
-  /** Saves a recipe. A recipe that is already saved (same source or title) is updated instead. */
+  /**
+   * Saves a recipe. A recipe that is already saved (see `recipeKey`) is updated instead.
+   * While a save of the same recipe is still pending, its promise is returned.
+   */
   save(recipe: Recipe, priceCheck?: SavedPriceCheck | null): Promise<Favorite>;
-  update(id: string, changes: FavoriteChanges): Promise<Favorite>;
+  /** Updates an entry. Resolves to `undefined` if it was removed in the meantime. */
+  update(id: string, changes: FavoriteChanges): Promise<Favorite | undefined>;
   remove(id: string): Promise<void>;
 }
 
@@ -183,8 +187,16 @@ class IndexedDBFavorites implements FavoritesStore {
     return f && migrate(f);
   }
 
+  // Pending saves per recipe key: a double click must not queue a second save.
+  private pendingSaves = new Map<string, Promise<Favorite>>();
+
   save(recipe: Recipe, priceCheck: SavedPriceCheck | null = null): Promise<Favorite> {
-    return this.serial(() => this.doSave(recipe, priceCheck));
+    const key = recipeKey(recipe);
+    const pending = this.pendingSaves.get(key);
+    if (pending) return pending;
+    const p = this.serial(() => this.doSave(recipe, priceCheck)).finally(() => this.pendingSaves.delete(key));
+    this.pendingSaves.set(key, p);
+    return p;
   }
 
   private async doSave(recipe: Recipe, priceCheck: SavedPriceCheck | null): Promise<Favorite> {
@@ -213,13 +225,15 @@ class IndexedDBFavorites implements FavoritesStore {
     return f;
   }
 
-  update(id: string, changes: FavoriteChanges): Promise<Favorite> {
+  update(id: string, changes: FavoriteChanges): Promise<Favorite | undefined> {
     return this.serial(() => this.doUpdate(id, changes));
   }
 
-  private async doUpdate(id: string, changes: FavoriteChanges): Promise<Favorite> {
+  private async doUpdate(id: string, changes: FavoriteChanges): Promise<Favorite | undefined> {
     const existing = await this.get(id);
-    if (!existing) throw new Error("Dieses Rezept ist nicht mehr auf der Merkliste.");
+    // Removed in the meantime (e.g. a late tick or note write): nothing to update,
+    // and the entry must not be written back.
+    if (!existing) return undefined;
     const f: Favorite = { ...existing, ...changes, updatedAt: new Date().toISOString() };
     await this.put(f);
     return f;

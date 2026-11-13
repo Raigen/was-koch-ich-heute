@@ -49,11 +49,28 @@ export default function App() {
       .catch((e: Error) => setError(`Backend nicht erreichbar: ${e.message}`));
   }, []);
 
+  // The UI list always follows IndexedDB: after the last pending write, the list is
+  // read again (writes are serialized in the store, so this read sees all of them).
+  // Results of older reads, or reads that finish while writes are pending, are ignored.
+  const pendingWrites = useRef(0);
+  const readSeq = useRef(0);
+
+  function reloadFavorites() {
+    const seq = ++readSeq.current;
+    return favoritesStore.list().then((list) => {
+      if (seq === readSeq.current && pendingWrites.current === 0) setFavs(list);
+    });
+  }
+
+  function trackWrite<T>(write: Promise<T>): Promise<T> {
+    pendingWrites.current++;
+    return write.finally(() => {
+      if (--pendingWrites.current === 0) reloadFavorites().catch(() => {});
+    });
+  }
+
   useEffect(() => {
-    favoritesStore
-      .list()
-      .then(setFavs)
-      .catch((e: Error) => setFavUnavailable(e.message));
+    reloadFavorites().catch((e: Error) => setFavUnavailable(e.message));
   }, []);
 
   useEffect(() => storageSet("stores", selectedStores), [selectedStores]);
@@ -84,34 +101,31 @@ export default function App() {
 
   const favWritten = () => setFavWriteError(null);
 
-  // Removing and updating are optimistic. On failure, the stored state is reloaded,
-  // or the previous state restored if even reading fails.
+  // Removing and updating are optimistic; the reload after the last write corrects
+  // the list. If even reading fails (IndexedDB gone), the previous state is restored.
   function favFailed(e: Error, previous?: Favorite[]) {
     setFavWriteError(e.message);
-    if (previous) favoritesStore.list().then(setFavs, () => setFavs(previous));
+    if (previous) reloadFavorites().catch(() => setFavs(previous));
   }
 
+  // Saving is not optimistic: the list shows the entry once the reload after the
+  // write has read it back, so a save that finishes after a removal cannot bring
+  // a deleted entry back into the UI.
   function saveFavorite(recipe: Recipe, priceCheck: SavedPriceCheck | null = null) {
-    favoritesStore
-      .save(recipe, priceCheck)
-      .then((f) => {
-        favWritten();
-        setFavs((list) => [f, ...list.filter((x) => x.id !== f.id)]);
-      })
-      .catch((e: Error) => favFailed(e));
+    trackWrite(favoritesStore.save(recipe, priceCheck)).then(favWritten, (e: Error) => favFailed(e));
   }
 
   function removeFavorite(id: string) {
     const previous = favs;
     setFavs((list) => list.filter((f) => f.id !== id));
-    favoritesStore.remove(id).then(favWritten, (e: Error) => favFailed(e, previous));
+    trackWrite(favoritesStore.remove(id)).then(favWritten, (e: Error) => favFailed(e, previous));
   }
 
   function updateFavorite(id: string, changes: FavoriteChanges) {
     const previous = favs;
     // Optimistic, so that ticking shopping list items feels instant.
     setFavs((list) => list.map((f) => (f.id === id ? { ...f, ...changes } : f)));
-    favoritesStore.update(id, changes).then(favWritten, (e: Error) => favFailed(e, previous));
+    trackWrite(favoritesStore.update(id, changes)).then(favWritten, (e: Error) => favFailed(e, previous));
   }
 
   // Asks before throwing away a note or a saved price comparison.
