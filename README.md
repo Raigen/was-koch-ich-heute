@@ -317,7 +317,5 @@ Shops that exceed `STORE_TIMEOUT` or fail are marked individually. "Fehlgeschlag
 ## Roadmap
 
 See the [issues](https://github.com/Raigen/was-koch-ich-heute/issues):
-- API usage and cost per search
 - favorites list
-- Mealie integration
 - Open Prices as a price source
