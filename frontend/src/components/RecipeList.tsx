@@ -1,12 +1,15 @@
 import { formatEur } from "../format";
 import type { Recipe } from "../types";
+import FavoriteButton from "./FavoriteButton";
 
 interface Props {
   recipes: Recipe[];
   onSelect: (r: Recipe) => void;
+  isSaved: (r: Recipe) => boolean;
+  onToggleSaved: (r: Recipe) => void;
 }
 
-export default function RecipeList({ recipes, onSelect }: Props) {
+export default function RecipeList({ recipes, onSelect, isSaved, onToggleSaved }: Props) {
   if (recipes.length === 0) {
     return <div className="empty">Keine Rezepte gefunden. Versuch es mit einem anderen Suchbegriff.</div>;
   }
@@ -14,7 +17,10 @@ export default function RecipeList({ recipes, onSelect }: Props) {
     <section className="recipe-grid">
       {recipes.map((r) => (
         <article key={r.id} className="recipe-card">
-          <h2>{r.title}</h2>
+          <div className="card-head">
+            <h2>{r.title}</h2>
+            <FavoriteButton title={r.title} saved={isSaved(r)} onClick={() => onToggleSaved(r)} />
+          </div>
           <p className="muted">{r.description}</p>
           <ul className="facts">
             <li>👥 {r.servings} Portionen</li>

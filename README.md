@@ -16,6 +16,10 @@ across all shops.
 
 The user interface is German because the app targets German supermarkets.
 
+Recipes can be saved to a **Merkliste** (favorites) together with their latest price comparison, a
+note and a shopping list that can be ticked off while shopping. The Merkliste is stored in the browser
+(IndexedDB, `frontend/src/favorites.ts`), so it is per browser and device for now.
+
 | Recipe search | Price comparison |
 |---|---|
 | ![Recipe search](docs/screenshot-recipes.png) | ![Price comparison](docs/screenshot-prices.png) |
@@ -317,5 +321,5 @@ Shops that exceed `STORE_TIMEOUT` or fail are marked individually. "Fehlgeschlag
 ## Roadmap
 
 See the [issues](https://github.com/Raigen/was-koch-ich-heute/issues):
-- favorites list
+- favorites list: sync across devices (the list is browser-only so far)
 - Open Prices as a price source

@@ -3,6 +3,8 @@ const num = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 2 });
 
 export const formatEur = (v: number) => eur.format(v);
 
+const dateTime = new Intl.DateTimeFormat("de-DE", { dateStyle: "medium", timeStyle: "short" });
+export const formatDateTime = (iso: string) => dateTime.format(new Date(iso));
 const int = new Intl.NumberFormat("de-DE", { maximumFractionDigits: 0 });
 
 /** Formats a count with German thousands separators, e.g. 18.400. */
