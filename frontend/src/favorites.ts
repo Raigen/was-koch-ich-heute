@@ -40,9 +40,13 @@ export interface FavoritesStore {
   /** All favorites, most recently saved first. */
   list(): Promise<Favorite[]>;
   get(id: string): Promise<Favorite | undefined>;
-  /** Saves a recipe. A recipe that is already saved (same source or title) is updated instead. */
+  /**
+   * Saves a recipe. A recipe that is already saved (see `recipeKey`) is updated instead.
+   * While a save of the same recipe is still pending, its promise is returned.
+   */
   save(recipe: Recipe, priceCheck?: SavedPriceCheck | null): Promise<Favorite>;
-  update(id: string, changes: FavoriteChanges): Promise<Favorite>;
+  /** Updates an entry. Resolves to `undefined` if it was removed in the meantime. */
+  update(id: string, changes: FavoriteChanges): Promise<Favorite | undefined>;
   remove(id: string): Promise<void>;
 }
 
@@ -56,12 +60,19 @@ export class FavoritesUnavailableError extends Error {
   }
 }
 
+const norm = (s: string) => s.trim().toLowerCase().replace(/\s+/g, " ");
+
 /**
  * Identifies "the same recipe" across searches. Recipe IDs come from the AI and are
- * only unique within one search result, so the source URL (or the title) is used.
+ * only unique within one search result. Source URL or title alone are not enough
+ * either (the AI may cite one collection page for several recipes, and titles like
+ * "Spaghetti Carbonara" repeat), so the key combines source URL, title and the
+ * ingredient names: only a recipe with the same content counts as already saved.
  */
 export function recipeKey(r: Recipe): string {
-  return (r.sourceUrl || r.title).trim().toLowerCase();
+  const url = norm(r.sourceUrl ?? "").replace(/^https?:\/\/(www\.)?/, "").replace(/\/+$/, "");
+  const ingredients = (r.ingredients ?? []).map((i) => norm(i.name)).sort();
+  return JSON.stringify([url, norm(r.title), ingredients]);
 }
 
 /** Stable key of one shopping list line, used to persist ticked items. */
@@ -85,8 +96,13 @@ function promisify<T>(req: IDBRequest<T>): Promise<T> {
   });
 }
 
-/** Brings records written by older app versions up to the current schema. */
+/**
+ * Brings records written by older app versions up to the current schema. Records from
+ * a newer app version (e.g. read by a cached older deployment) are left as they are,
+ * so that writing them back does not downgrade their version.
+ */
 function migrate(f: Favorite): Favorite {
+  if ((f.schemaVersion ?? 0) >= FAVORITE_SCHEMA_VERSION) return f;
   // Version 1 is the first schema; future migrations go here.
   return { ...f, schemaVersion: FAVORITE_SCHEMA_VERSION };
 }
@@ -104,7 +120,8 @@ class IndexedDBFavorites implements FavoritesStore {
   }
 
   private open(): Promise<IDBDatabase> {
-    this.db ??= new Promise<IDBDatabase>((resolve, reject) => {
+    if (this.db) return this.db;
+    const opened: Promise<IDBDatabase> = new Promise<IDBDatabase>((resolve, reject) => {
       let req: IDBOpenDBRequest;
       try {
         if (typeof indexedDB === "undefined") throw new Error("no IndexedDB");
@@ -115,18 +132,31 @@ class IndexedDBFavorites implements FavoritesStore {
       }
       req.onupgradeneeded = () => {
         const db = req.result;
-        if (!db.objectStoreNames.contains(STORE)) {
-          const store = db.createObjectStore(STORE, { keyPath: "id" });
-          store.createIndex("recipeKey", "recipeKey", { unique: false });
-        }
+        if (!db.objectStoreNames.contains(STORE)) db.createObjectStore(STORE, { keyPath: "id" });
       };
-      req.onsuccess = () => resolve(req.result);
+      req.onsuccess = () => {
+        const db = req.result;
+        // Let a newer app version in another tab upgrade the DB, and reopen on the next
+        // call if the browser closes the connection (e.g. Safari after a while).
+        const drop = () => {
+          if (this.db === opened) this.db = null;
+        };
+        db.onversionchange = () => {
+          db.close();
+          drop();
+        };
+        db.onclose = drop;
+        resolve(db);
+      };
       req.onerror = () => reject(new FavoritesUnavailableError());
       req.onblocked = () => reject(new FavoritesUnavailableError());
     });
+    this.db = opened;
     // Allow a later retry if opening failed.
-    this.db.catch(() => (this.db = null));
-    return this.db;
+    opened.catch(() => {
+      if (this.db === opened) this.db = null;
+    });
+    return opened;
   }
 
   private async tx<T>(mode: IDBTransactionMode, fn: (s: IDBObjectStore) => IDBRequest<T>): Promise<T> {
@@ -144,33 +174,40 @@ class IndexedDBFavorites implements FavoritesStore {
   }
 
   private put(f: Favorite): Promise<IDBValidKey> {
-    // recipeKey is stored alongside the record for the index; it is not part of `Favorite`.
-    return this.tx("readwrite", (s) => s.put({ ...f, recipeKey: recipeKey(f.recipe) }));
+    return this.tx("readwrite", (s) => s.put(f));
   }
 
   async list(): Promise<Favorite[]> {
     const all = await this.tx("readonly", (s) => s.getAll() as IDBRequest<Favorite[]>);
-    return all.map(strip).map(migrate).sort((a, b) => b.savedAt.localeCompare(a.savedAt));
+    return all.map(migrate).sort((a, b) => b.savedAt.localeCompare(a.savedAt));
   }
 
   async get(id: string): Promise<Favorite | undefined> {
     const f = await this.tx("readonly", (s) => s.get(id) as IDBRequest<Favorite | undefined>);
-    return f && migrate(strip(f));
+    return f && migrate(f);
   }
 
+  // Pending saves per recipe key: a double click must not queue a second save.
+  private pendingSaves = new Map<string, Promise<Favorite>>();
+
   save(recipe: Recipe, priceCheck: SavedPriceCheck | null = null): Promise<Favorite> {
-    return this.serial(() => this.doSave(recipe, priceCheck));
+    const key = recipeKey(recipe);
+    const pending = this.pendingSaves.get(key);
+    if (pending) return pending;
+    const p = this.serial(() => this.doSave(recipe, priceCheck)).finally(() => this.pendingSaves.delete(key));
+    this.pendingSaves.set(key, p);
+    return p;
   }
 
   private async doSave(recipe: Recipe, priceCheck: SavedPriceCheck | null): Promise<Favorite> {
     const now = new Date().toISOString();
-    const existing = await this.tx(
-      "readonly",
-      (s) => s.index("recipeKey").get(recipeKey(recipe)) as IDBRequest<Favorite | undefined>,
-    );
+    // The list is small (a personal Merkliste), so a scan is fine and keeps the
+    // stored records free of derived index fields.
+    const key = recipeKey(recipe);
+    const existing = (await this.list()).find((f) => recipeKey(f.recipe) === key);
     const f: Favorite = existing
       ? {
-          ...migrate(strip(existing)),
+          ...existing,
           recipe,
           priceCheck: priceCheck ?? existing.priceCheck,
           updatedAt: now,
@@ -188,13 +225,15 @@ class IndexedDBFavorites implements FavoritesStore {
     return f;
   }
 
-  update(id: string, changes: FavoriteChanges): Promise<Favorite> {
+  update(id: string, changes: FavoriteChanges): Promise<Favorite | undefined> {
     return this.serial(() => this.doUpdate(id, changes));
   }
 
-  private async doUpdate(id: string, changes: FavoriteChanges): Promise<Favorite> {
+  private async doUpdate(id: string, changes: FavoriteChanges): Promise<Favorite | undefined> {
     const existing = await this.get(id);
-    if (!existing) throw new Error("Dieses Rezept ist nicht mehr auf der Merkliste.");
+    // Removed in the meantime (e.g. a late tick or note write): nothing to update,
+    // and the entry must not be written back.
+    if (!existing) return undefined;
     const f: Favorite = { ...existing, ...changes, updatedAt: new Date().toISOString() };
     await this.put(f);
     return f;
@@ -205,12 +244,6 @@ class IndexedDBFavorites implements FavoritesStore {
       await this.tx("readwrite", (s) => s.delete(id));
     });
   }
-}
-
-function strip(f: Favorite & { recipeKey?: string }): Favorite {
-  const { recipeKey: _ignored, ...rest } = f;
-  void _ignored;
-  return rest;
 }
 
 export const favorites: FavoritesStore = new IndexedDBFavorites();
