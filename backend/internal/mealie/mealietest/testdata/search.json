@@ -1,0 +1,50 @@
+{
+  "page": 1,
+  "per_page": 24,
+  "total": 2,
+  "total_pages": 1,
+  "items": [
+    {
+      "id": "5f0c8a52-6a7e-4d3b-9a43-0d6c2a1e7b11",
+      "userId": "a3d9c1f2-0000-4000-8000-000000000001",
+      "householdId": "a3d9c1f2-0000-4000-8000-000000000002",
+      "groupId": "a3d9c1f2-0000-4000-8000-000000000003",
+      "name": "Linsen-Dal",
+      "slug": "linsen-dal",
+      "image": "Xy7a",
+      "recipeServings": 2.0,
+      "recipeYieldQuantity": 0.0,
+      "recipeYield": null,
+      "totalTime": "45 Minuten",
+      "totalTimeSeconds": null,
+      "description": "Cremiges Dal mit roten Linsen.",
+      "recipeCategory": [],
+      "tags": [],
+      "tools": [],
+      "rating": null,
+      "orgURL": null
+    },
+    {
+      "id": "7b1e2d43-1c2b-4f5e-8a9b-3c4d5e6f7a8b",
+      "userId": "a3d9c1f2-0000-4000-8000-000000000001",
+      "householdId": "a3d9c1f2-0000-4000-8000-000000000002",
+      "groupId": "a3d9c1f2-0000-4000-8000-000000000003",
+      "name": "Omas Kartoffelsuppe",
+      "slug": "omas-kartoffelsuppe",
+      "image": null,
+      "recipeServings": 0,
+      "recipeYieldQuantity": 0,
+      "recipeYield": "6 Portionen",
+      "totalTime": null,
+      "totalTimeSeconds": 4500,
+      "description": null,
+      "recipeCategory": [],
+      "tags": [],
+      "tools": [],
+      "rating": null,
+      "orgURL": null
+    }
+  ],
+  "next": null,
+  "previous": null
+}

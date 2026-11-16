@@ -1,4 +1,14 @@
-import type { AppConfig, Ingredient, PriceEvent, RecipeQuery, RecipeSearchResult, Store, Usage } from "./types";
+import type {
+  AppConfig,
+  Ingredient,
+  MealieRecipePage,
+  PriceEvent,
+  Recipe,
+  RecipeQuery,
+  RecipeSearchResult,
+  Store,
+  Usage,
+} from "./types";
 
 /** API error; a failed research can still carry the (billed) AI usage. */
 export class ApiError extends Error {
@@ -38,6 +48,16 @@ export async function searchRecipes(q: RecipeQuery, signal?: AbortSignal): Promi
   });
   const result = await json<RecipeSearchResult>(res);
   return { ...result, recipes: result.recipes ?? [] };
+}
+
+export async function searchMealie(query: string, page: number, signal?: AbortSignal): Promise<MealieRecipePage> {
+  const params = new URLSearchParams({ query, page: String(page) });
+  return json<MealieRecipePage>(await fetch(`/api/mealie/recipes?${params}`, { signal }));
+}
+
+export async function getMealieRecipe(slug: string, servings: number, signal?: AbortSignal): Promise<Recipe> {
+  const params = new URLSearchParams({ servings: String(servings) });
+  return json<Recipe>(await fetch(`/api/mealie/recipes/${encodeURIComponent(slug)}?${params}`, { signal }));
 }
 
 /**

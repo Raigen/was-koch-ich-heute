@@ -20,6 +20,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/raigen/was-koch-ich-heute/backend/internal/mealie"
 	"github.com/raigen/was-koch-ich-heute/backend/internal/model"
 	"github.com/raigen/was-koch-ich-heute/backend/internal/pricing"
 	"github.com/raigen/was-koch-ich-heute/backend/internal/research"
@@ -42,6 +43,8 @@ type Server struct {
 	heartbeat time.Duration
 	// prices converts AI usage into an estimated cost.
 	prices pricing.PriceTable
+	// mealie is nil when no Mealie instance is configured.
+	mealie *mealie.Client
 }
 
 // Options configures the server.
@@ -56,6 +59,8 @@ type Options struct {
 	Heartbeat time.Duration
 	// Prices is the price table for cost estimates (default: built-in prices).
 	Prices *pricing.PriceTable
+	// Mealie enables the Mealie recipe source (optional).
+	Mealie *mealie.Client
 }
 
 func New(r research.Researcher, opts Options) *Server {
@@ -76,6 +81,7 @@ func New(r research.Researcher, opts Options) *Server {
 		prices:       prices,
 		storeTimeout: opts.StoreTimeout,
 		heartbeat:    opts.Heartbeat,
+		mealie:       opts.Mealie,
 		researcher:   r,
 		cache:        newTTLCache(),
 		parallel:     opts.Parallel,
@@ -98,6 +104,9 @@ func (s *Server) Handler() http.Handler {
 	})
 	mux.HandleFunc("POST /api/recipes/search", s.handleRecipeSearch)
 	mux.HandleFunc("POST /api/prices/compare", s.handlePriceCompare)
+	mux.HandleFunc("GET /api/mealie/recipes", s.handleMealieSearch)
+	mux.HandleFunc("GET /api/mealie/recipes/{slug}", s.handleMealieRecipe)
+	mux.HandleFunc("GET /api/mealie/images/{id}", s.handleMealieImage)
 	if s.staticDir != "" {
 		mux.Handle("/", spaHandler(s.staticDir))
 	}
@@ -106,7 +115,7 @@ func (s *Server) Handler() http.Handler {
 
 func (s *Server) handleConfig(w http.ResponseWriter, r *http.Request) {
 	_, demo := s.researcher.(*research.Demo)
-	writeJSON(w, http.StatusOK, map[string]any{"provider": s.researcher.Name(), "demo": demo})
+	writeJSON(w, http.StatusOK, map[string]any{"provider": s.researcher.Name(), "demo": demo, "mealie": s.mealie != nil})
 }
 
 func (s *Server) handleRecipeSearch(w http.ResponseWriter, r *http.Request) {

@@ -26,6 +26,25 @@ export interface Recipe {
   ingredients: Ingredient[];
   steps: string[];
   estimatedCostEur: number;
+  // Only set for recipes loaded from Mealie.
+  imageUrl?: string;
+  mealieUrl?: string;
+}
+
+export interface MealieRecipeSummary {
+  slug: string;
+  title: string;
+  description: string;
+  imageUrl: string;
+  servings: number;
+  totalTimeMinutes: number;
+}
+
+export interface MealieRecipePage {
+  recipes: MealieRecipeSummary[];
+  page: number;
+  totalPages: number;
+  total: number;
 }
 
 export interface RecipeQuery {
@@ -114,6 +133,7 @@ export interface RecipeSearchResult {
 export interface AppConfig {
   provider: string;
   demo: boolean;
+  mealie: boolean;
 }
 
 export type PriceEvent =
