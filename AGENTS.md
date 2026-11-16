@@ -35,6 +35,8 @@ ingredients in German supermarket web shops (REWE, EDEKA, ALDI, Lidl, PENNY, Kau
 - `internal/research`: the `Researcher` interface with Claude, Mistral and demo implementations.
   - Prompts and JSON parsers in `prompts.go` are shared by all providers.
   - New providers implement the interface and are registered in `research.New`.
+  - Both research methods also return `model.Usage` (tokens, web searches), summed over all API calls;
+    the cost is computed from the price table in `internal/pricing/cost.go`, never by the provider.
 - `internal/pricing`: package counts, costs and totals.
   - **Never let the AI do arithmetic.** The AI returns raw data (price, package size); the backend computes everything else.
 - `internal/api`: HTTP routes.

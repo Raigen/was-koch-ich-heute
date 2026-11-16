@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/raigen/was-koch-ich-heute/backend/internal/api"
+	"github.com/raigen/was-koch-ich-heute/backend/internal/pricing"
 	"github.com/raigen/was-koch-ich-heute/backend/internal/research"
 )
 
@@ -40,10 +41,16 @@ func main() {
 		slog.Error("invalid STORE_TIMEOUT (example: 3m, 90s)", "err", err)
 		os.Exit(1)
 	}
+	prices, err := pricing.LoadPriceTable(os.Getenv("PRICE_TABLE"))
+	if err != nil {
+		slog.Error("invalid PRICE_TABLE (JSON file path or inline JSON)", "err", err)
+		os.Exit(1)
+	}
 	srv := api.New(researcher, api.Options{
 		StaticDir:    os.Getenv("STATIC_DIR"),
 		Parallel:     parallel,
 		StoreTimeout: storeTimeout,
+		Prices:       &prices,
 	})
 
 	addr := os.Getenv("ADDR")

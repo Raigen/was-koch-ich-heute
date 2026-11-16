@@ -1,15 +1,27 @@
-import type { AppConfig, Ingredient, PriceEvent, Recipe, RecipeQuery, Store } from "./types";
+import type { AppConfig, Ingredient, PriceEvent, RecipeQuery, RecipeSearchResult, Store, Usage } from "./types";
+
+/** API error; a failed research can still carry the (billed) AI usage. */
+export class ApiError extends Error {
+  readonly usage?: Usage;
+
+  constructor(message: string, usage?: Usage) {
+    super(message);
+    this.usage = usage;
+  }
+}
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     let msg = `${res.status} ${res.statusText}`;
+    let usage: Usage | undefined;
     try {
       const body = await res.json();
       if (body?.error) msg = body.error;
+      usage = body?.usage;
     } catch {
       /* response was not JSON */
     }
-    throw new Error(msg);
+    throw new ApiError(msg, usage);
   }
   return res.json() as Promise<T>;
 }
@@ -17,14 +29,15 @@ async function json<T>(res: Response): Promise<T> {
 export const getConfig = () => fetch("/api/config").then((r) => json<AppConfig>(r));
 export const getStores = () => fetch("/api/stores").then((r) => json<Store[]>(r));
 
-export async function searchRecipes(q: RecipeQuery, signal?: AbortSignal): Promise<Recipe[]> {
+export async function searchRecipes(q: RecipeQuery, signal?: AbortSignal): Promise<RecipeSearchResult> {
   const res = await fetch("/api/recipes/search", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(q),
     signal,
   });
-  return (await json<{ recipes: Recipe[] }>(res)).recipes ?? [];
+  const result = await json<RecipeSearchResult>(res);
+  return { ...result, recipes: result.recipes ?? [] };
 }
 
 /**

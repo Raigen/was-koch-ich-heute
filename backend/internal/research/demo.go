@@ -70,9 +70,12 @@ var demoRecipes = []demoRecipe{
 	}},
 }
 
-func (d *Demo) SearchRecipes(ctx context.Context, q model.RecipeQuery) ([]model.Recipe, error) {
+// demoUsage is the usage of the demo provider: no AI calls, no cost.
+func demoUsage() model.Usage { return model.Usage{Provider: "demo", Model: "demo"} }
+
+func (d *Demo) SearchRecipes(ctx context.Context, q model.RecipeQuery) ([]model.Recipe, model.Usage, error) {
 	if err := sleep(ctx, d.Delay); err != nil {
-		return nil, err
+		return nil, demoUsage(), err
 	}
 	words := strings.Fields(strings.ToLower(q.Query + " " + q.Diet))
 	type scored struct {
@@ -103,7 +106,7 @@ func (d *Demo) SearchRecipes(ctx context.Context, q model.RecipeQuery) ([]model.
 		}
 		out = append(out, s.r)
 	}
-	return out, nil
+	return out, demoUsage(), nil
 }
 
 func scaleRecipe(r model.Recipe, servings int) model.Recipe {
@@ -164,9 +167,9 @@ var storeFactor = map[string]float64{
 	"rewe": 1.12, "edeka": 1.15, "aldi-sued": 0.95, "aldi-nord": 0.96, "lidl": 0.97, "penny": 0.99, "kaufland": 1.0,
 }
 
-func (d *Demo) FindPrices(ctx context.Context, store model.Store, ingredients []model.Ingredient, postalCode string) (model.StorePrices, error) {
+func (d *Demo) FindPrices(ctx context.Context, store model.Store, ingredients []model.Ingredient, postalCode string) (model.StorePrices, model.Usage, error) {
 	if err := sleep(ctx, d.Delay+time.Duration(hash(store.ID)%900)*time.Millisecond); err != nil {
-		return model.StorePrices{StoreID: store.ID}, err
+		return model.StorePrices{StoreID: store.ID}, demoUsage(), err
 	}
 	res := model.StorePrices{StoreID: store.ID}
 	for _, in := range ingredients {
@@ -189,7 +192,7 @@ func (d *Demo) FindPrices(ctx context.Context, store model.Store, ingredients []
 			IsPromotion: promo, Confidence: "niedrig", Note: "Demo-Daten – kein echter Preis",
 		})
 	}
-	return res, nil
+	return res, demoUsage(), nil
 }
 
 func hash(s string) uint32 {
